@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arcane Formula</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- LOBBY -->
+    <div id="lobby" class="hidden overlay">
+        <div class="lobby-box">
+            <h1 class="lobby-title">ARCANE FORMULA</h1>
+            <p class="lobby-sub">Two mages. Their formulas. One arena.</p>
+            <div class="lobby-actions">
+                <button id="createRoom" class="btn-gold">CREATE ROOM</button>
+                <div class="lobby-divider"><span>or</span></div>
+                <div class="join-row">
+                    <input id="roomCodeInput" type="text" placeholder="ROOM CODE" maxlength="6" spellcheck="false" autocomplete="off">
+                    <button id="joinRoom" class="btn-gold">JOIN</button>
+                </div>
+            </div>
+            <div id="roomStatus" class="room-status"></div>
+            <div id="roomCodeDisplay" class="room-code hidden"></div>
+        </div>
+    </div>
+
+    <!-- SPELLBOOK CAROUSEL -->
+    <div id="spellbook-ui" class="hidden overlay">
+        <div class="spellbook-wrap">
+            <!-- carousel nav -->
+            <div class="carousel-header">
+                <button id="prevSpell" class="carousel-arrow">&larr;</button>
+                <div class="carousel-dots" id="carouselDots"></div>
+                <button id="nextSpell" class="carousel-arrow">&rarr;</button>
+            </div>
+
+            <!-- carousel cards -->
+            <div class="carousel-viewport">
+                <div class="carousel-track" id="carouselTrack"></div>
+            </div>
+
+            <!-- bottom -->
+            <div class="spellbook-bottom">
+                <div id="readyStatus" class="ready-status"></div>
+                <button id="readyBtn" class="btn-gold btn-ready">READY</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+        <div class="hud-left">
+            <div class="hud-label">YOU</div>
+            <div class="hp-bar"><div id="player-hp" class="hp-fill"></div><span id="player-hp-text" class="bar-text">100</span></div>
+            <div class="mana-bar"><div id="player-mana" class="mana-fill"></div><div id="player-mana-locked" class="mana-locked"></div><span id="player-mana-text" class="bar-text">100</span></div>
+            <div class="spell-keys" id="spellKeys"></div>
+        </div>
+        <div class="hud-center">
+            <div id="dash-cd" class="dash-cd"></div>
+        </div>
+        <div class="hud-right">
+            <div class="hud-label">ENEMY</div>
+            <div class="hp-bar"><div id="enemy-hp" class="hp-fill hp-enemy"></div><span id="enemy-hp-text" class="bar-text">100</span></div>
+            <div class="mana-bar"><div id="enemy-mana" class="mana-fill"></div><div id="enemy-mana-locked" class="mana-locked"></div></div>
+        </div>
+    </div>
+
+    <!-- VICTORY -->
+    <div id="victory-screen" class="hidden overlay">
+        <h1 id="victory-text"></h1>
+        <p id="victory-sub"></p>
+        <button id="restartBtn" class="btn-gold">REMATCH</button>
+    </div>
+
+    <script src="js/parser.js"></script>
+    <script src="js/blocks.js"></script>
+    <script src="js/arcon.js"></script>
+    <script src="js/intro.js"></script>
+    <script src="js/spellbook.js"></script>
+    <script src="js/network.js"></script>
+    <script src="js/battle.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
