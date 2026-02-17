@@ -13,6 +13,9 @@ const Network = (() => {
     let connected     = false;
     let myNick        = '';
     let myColor       = '#4488ff';
+    let _colorIndex   = 0;             // unique color index per member
+
+    const PARTY_COLORS = ['#4488ff','#ff4444','#44cc66','#ff88ff','#ffaa22','#22ddff','#cccc44','#ff6688'];
 
     /* callbacks (set once by main.js) */
     let onMessage        = null;
@@ -170,7 +173,9 @@ const Network = (() => {
 
     /* ── Connection wiring ── */
     function setupConn(c, peerId) {
-        const entry = { conn: c, peerId: peerId || c.peer, nick: '', ready: false, color: '#ff4444' };
+        const peerColorIdx = connections.length + 1; // host=0, first peer=1, etc.
+        const peerColor = PARTY_COLORS[peerColorIdx % PARTY_COLORS.length];
+        const entry = { conn: c, peerId: peerId || c.peer, nick: '', ready: false, color: peerColor, colorIndex: peerColorIdx };
         connections.push(entry);
         connected = true;
         startBatching();
@@ -204,14 +209,27 @@ const Network = (() => {
 
         // Send our info immediately
         c.send({ type: '_party-info', nick: myNick, color: myColor, ready: false });
+
+        // If we're the host, assign a unique color to this peer
+        if (_isHost) {
+            c.send({ type: '_assign-color', colorIndex: peerColorIdx });
+        }
     }
 
     function dispatchMessage(raw, entry) {
         if (!raw || !raw.type) return;
         if (raw.type === '_party-info') {
             entry.nick  = raw.nick  || entry.nick;
-            entry.color = raw.color || entry.color;
+            if (raw.color) entry.color = raw.color;
             entry.ready = !!raw.ready;
+            if (raw.colorIndex !== undefined) entry.colorIndex = raw.colorIndex;
+            firePartyUpdate();
+            return;
+        }
+        if (raw.type === '_assign-color') {
+            // Host assigned us a color index
+            _colorIndex = raw.colorIndex;
+            myColor = PARTY_COLORS[raw.colorIndex % PARTY_COLORS.length];
             firePartyUpdate();
             return;
         }
@@ -231,6 +249,8 @@ const Network = (() => {
         cleanup();
         applyCallbacks(callbacks);
         _isHost = true;
+        _colorIndex = 0;
+        myColor = PARTY_COLORS[0];
         partyCode = generateCode();
 
         return new Promise((resolve, reject) => {
@@ -285,6 +305,7 @@ const Network = (() => {
         cleanup();
         applyCallbacks(callbacks);
         _isHost = false;
+        _colorIndex = -1; // Will be assigned by host
         partyCode = code.toUpperCase().trim();
 
         return new Promise((resolve, reject) => {
@@ -369,12 +390,12 @@ const Network = (() => {
     }
 
     function getMembers() {
-        const members = connections.map(e => ({
+        const members = connections.map((e, idx) => ({
             id: e.peerId,
             nick: e.nick || e.peerId.replace(PREFIX, '').substring(0, 8),
             color: e.color,
             ready: e.ready,
-            isHost: false,
+            isHost: !_isHost && idx === 0, // if we're not host, first connection is the host
         }));
         members.unshift({
             id: 'self',
@@ -414,6 +435,8 @@ const Network = (() => {
         isConnected : () => connected,
         isHost      : () => _isHost,
         getCode     : () => partyCode,
+        getColor    : () => myColor,
+        PARTY_COLORS,
         getPeerCount,
         getPeerIds,
         getMembers,

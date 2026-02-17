@@ -12,6 +12,7 @@ const Spellbook = (() => {
     // Each spell has 4 block editor instances
     // But we only show one at a time (via formula tabs)
     let editors = {}; // editors[spellIdx][formulaProp] = editor instance
+    let editorMode = 'blocks'; // 'blocks' or 'formula'
 
     const FORMULA_KEYS = [
         { prop: 'x', label: 'X(i,t)', desc: 'Horizontal position' },
@@ -42,6 +43,9 @@ const Spellbook = (() => {
             });
             editors[i] = {};
         }
+
+        // Auto-load from localStorage if available
+        loadFromLocalStorage();
     }
 
     function buildUI() {
@@ -77,8 +81,45 @@ const Spellbook = (() => {
             ready = true;
             document.getElementById('readyBtn').textContent = 'WAITING...';
             document.getElementById('readyBtn').style.opacity = '0.5';
+            saveToLocalStorage(); // auto-save on ready
             if (onReadyCallback) onReadyCallback(compileSpells());
         };
+
+        // Save/Load/Export/Import buttons in the bottom bar
+        const bottomEl = document.querySelector('.spellbook-bottom');
+        if (bottomEl) {
+            const ioRow = document.createElement('div');
+            ioRow.className = 'spellbook-io-row';
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'ws-btn';
+            saveBtn.textContent = '💾 SAVE';
+            saveBtn.title = 'Save spellbook to browser';
+            saveBtn.addEventListener('click', () => { saveToLocalStorage(); saveBtn.textContent = '✓ SAVED'; setTimeout(() => saveBtn.textContent = '💾 SAVE', 1500); });
+            ioRow.appendChild(saveBtn);
+
+            const loadBtn = document.createElement('button');
+            loadBtn.className = 'ws-btn';
+            loadBtn.textContent = '📂 LOAD';
+            loadBtn.title = 'Load spellbook from browser';
+            loadBtn.addEventListener('click', () => { if (loadFromLocalStorage()) { loadBtn.textContent = '✓ LOADED'; setTimeout(() => loadBtn.textContent = '📂 LOAD', 1500); buildUI(); } });
+            ioRow.appendChild(loadBtn);
+
+            const exportBtn = document.createElement('button');
+            exportBtn.className = 'ws-btn';
+            exportBtn.textContent = '⬇ EXPORT';
+            exportBtn.title = 'Export to .spellbook file';
+            exportBtn.addEventListener('click', exportSpellbook);
+            ioRow.appendChild(exportBtn);
+
+            const importBtn = document.createElement('button');
+            importBtn.className = 'ws-btn';
+            importBtn.textContent = '⬆ IMPORT';
+            importBtn.title = 'Import from .spellbook file';
+            importBtn.addEventListener('click', importSpellbook);
+            ioRow.appendChild(importBtn);
+
+            bottomEl.insertBefore(ioRow, bottomEl.firstChild);
+        }
     }
 
     function buildPalette() {
@@ -180,53 +221,131 @@ const Spellbook = (() => {
         }
         panel.appendChild(formulaTabs);
 
+        // Editor mode toggle (Blocks vs Formula text)
+        const modeRow = document.createElement('div');
+        modeRow.className = 'editor-mode-row';
+        const blocksBtn = document.createElement('button');
+        blocksBtn.className = 'editor-mode-btn' + (editorMode === 'blocks' ? ' active' : '');
+        blocksBtn.textContent = '🧱 BLOCKS';
+        blocksBtn.addEventListener('click', () => { editorMode = 'blocks'; buildEditorPanel(); });
+        const formulaBtn = document.createElement('button');
+        formulaBtn.className = 'editor-mode-btn' + (editorMode === 'formula' ? ' active' : '');
+        formulaBtn.textContent = '✏️ FORMULA';
+        formulaBtn.addEventListener('click', () => { editorMode = 'formula'; buildEditorPanel(); });
+        modeRow.appendChild(blocksBtn);
+        modeRow.appendChild(formulaBtn);
+        panel.appendChild(modeRow);
+
         // LaTeX preview
         const latexEl = document.createElement('div');
         latexEl.className = 'latex-preview';
         latexEl.id = 'latexPreview';
         panel.appendChild(latexEl);
 
-        // Block workspace
-        const workspace = document.createElement('div');
-        workspace.className = 'block-workspace';
-        workspace.id = 'blockWorkspace';
-        panel.appendChild(workspace);
+        if (editorMode === 'formula') {
+            // Formula text input mode
+            const formulaInput = document.createElement('textarea');
+            formulaInput.className = 'formula-text-input';
+            formulaInput.id = 'formulaTextInput';
+            formulaInput.placeholder = 'e.g. player.x + cos(aim) * 300 * t';
+            // Get current expression from tree
+            const currentExpr = spell.trees[currentFormula] ? Blocks.toExpr(spell.trees[currentFormula]) : '0';
+            formulaInput.value = currentExpr;
+            formulaInput.spellcheck = false;
 
-        // Toolbar
-        const toolbar = document.createElement('div');
-        toolbar.className = 'workspace-toolbar';
+            // Live parse & preview
+            const updateFromText = () => {
+                try {
+                    const expr = formulaInput.value.trim() || '0';
+                    Parser.compile(expr); // test if it parses
+                    formulaInput.style.borderColor = 'var(--gold)';
+                    // Update LaTeX preview from text
+                    try { katex.render(expr.replace(/\*/g, ' \\cdot ').replace(/pi/g, '\\pi'), latexEl, { throwOnError: false, displayMode: true }); } catch(e) { latexEl.textContent = expr; }
+                } catch(e) {
+                    formulaInput.style.borderColor = 'var(--red)';
+                }
+            };
+            formulaInput.addEventListener('input', updateFromText);
 
-        const clearBtn = document.createElement('button');
-        clearBtn.className = 'ws-btn danger';
-        clearBtn.textContent = 'CLEAR';
-        clearBtn.addEventListener('click', () => {
-            const editor = getCurrentEditor();
-            if (editor) {
+            // On blur, commit to a tree (or store raw expression)
+            formulaInput.addEventListener('blur', () => {
+                try {
+                    const expr = formulaInput.value.trim() || '0';
+                    Parser.compile(expr); // validate
+                    // Store as a raw expression marker
+                    spell.trees[currentFormula] = { type: 'raw', expr };
+                } catch(e) { /* keep old tree */ }
+            });
+
+            panel.appendChild(formulaInput);
+            setTimeout(updateFromText, 0);
+
+            // Toolbar
+            const toolbar = document.createElement('div');
+            toolbar.className = 'workspace-toolbar';
+            const clearBtn = document.createElement('button');
+            clearBtn.className = 'ws-btn danger';
+            clearBtn.textContent = 'CLEAR';
+            clearBtn.addEventListener('click', () => {
+                formulaInput.value = '0';
                 spell.trees[currentFormula] = null;
-                editor.setRoot(null);
-            }
-        });
-        toolbar.appendChild(clearBtn);
+            });
+            toolbar.appendChild(clearBtn);
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'ws-btn';
+            resetBtn.textContent = 'RESET TO DEFAULT';
+            resetBtn.addEventListener('click', () => {
+                const def = Blocks.DEFAULTS[currentSpell];
+                const defaultTree = def[currentFormula];
+                if (defaultTree) {
+                    spell.trees[currentFormula] = Blocks.cloneNode(defaultTree);
+                    formulaInput.value = Blocks.toExpr(defaultTree);
+                }
+            });
+            toolbar.appendChild(resetBtn);
+            panel.appendChild(toolbar);
+        } else {
+            // Block workspace (original mode)
+            const workspace = document.createElement('div');
+            workspace.className = 'block-workspace';
+            workspace.id = 'blockWorkspace';
+            panel.appendChild(workspace);
 
-        const resetBtn = document.createElement('button');
-        resetBtn.className = 'ws-btn';
-        resetBtn.textContent = 'RESET TO DEFAULT';
-        resetBtn.addEventListener('click', () => {
-            const def = Blocks.DEFAULTS[currentSpell];
-            const defaultTree = def[currentFormula];
-            if (defaultTree) {
-                const clone = Blocks.cloneNode(defaultTree);
-                spell.trees[currentFormula] = clone;
+            // Toolbar
+            const toolbar = document.createElement('div');
+            toolbar.className = 'workspace-toolbar';
+
+            const clearBtn = document.createElement('button');
+            clearBtn.className = 'ws-btn danger';
+            clearBtn.textContent = 'CLEAR';
+            clearBtn.addEventListener('click', () => {
                 const editor = getCurrentEditor();
-                if (editor) editor.setRoot(clone);
-            }
-        });
-        toolbar.appendChild(resetBtn);
+                if (editor) {
+                    spell.trees[currentFormula] = null;
+                    editor.setRoot(null);
+                }
+            });
+            toolbar.appendChild(clearBtn);
 
-        panel.appendChild(toolbar);
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'ws-btn';
+            resetBtn.textContent = 'RESET TO DEFAULT';
+            resetBtn.addEventListener('click', () => {
+                const def = Blocks.DEFAULTS[currentSpell];
+                const defaultTree = def[currentFormula];
+                if (defaultTree) {
+                    const clone = Blocks.cloneNode(defaultTree);
+                    spell.trees[currentFormula] = clone;
+                    const editor = getCurrentEditor();
+                    if (editor) editor.setRoot(clone);
+                }
+            });
+            toolbar.appendChild(resetBtn);
+            panel.appendChild(toolbar);
 
-        // Initialize/re-initialize the block editor for this formula
-        initEditor(currentSpell, currentFormula);
+            // Initialize/re-initialize the block editor for this formula
+            initEditor(currentSpell, currentFormula);
+        }
     }
 
     function initEditor(spellIdx, formulaProp) {
@@ -425,10 +544,10 @@ const Spellbook = (() => {
         const compiled = [];
         for (const spell of spells) {
             try {
-                const xExpr = Blocks.toExpr(spell.trees.x);
-                const yExpr = Blocks.toExpr(spell.trees.y);
-                const emitExpr = Blocks.toExpr(spell.trees.emit);
-                const widthExpr = Blocks.toExpr(spell.trees.width);
+                const xExpr = spell.trees.x && spell.trees.x.type === 'raw' ? spell.trees.x.expr : Blocks.toExpr(spell.trees.x);
+                const yExpr = spell.trees.y && spell.trees.y.type === 'raw' ? spell.trees.y.expr : Blocks.toExpr(spell.trees.y);
+                const emitExpr = spell.trees.emit && spell.trees.emit.type === 'raw' ? spell.trees.emit.expr : Blocks.toExpr(spell.trees.emit);
+                const widthExpr = spell.trees.width && spell.trees.width.type === 'raw' ? spell.trees.width.expr : Blocks.toExpr(spell.trees.width);
 
                 compiled.push({
                     name: spell.name || 'Unnamed',
@@ -477,6 +596,90 @@ const Spellbook = (() => {
         ready = false;
         const btn = document.getElementById('readyBtn');
         if (btn) { btn.textContent = 'READY'; btn.style.opacity = '1'; }
+    }
+
+    // ═══════════════════════════════════════
+    //  SAVE / LOAD / EXPORT / IMPORT
+    // ═══════════════════════════════════════
+    function serializeSpellbook() {
+        return spells.map(s => ({
+            name: s.name,
+            cost: s.cost,
+            trees: {
+                x: s.trees.x,
+                y: s.trees.y,
+                emit: s.trees.emit,
+                width: s.trees.width,
+            },
+        }));
+    }
+
+    function deserializeSpellbook(data) {
+        if (!Array.isArray(data) || data.length !== 6) return false;
+        for (let i = 0; i < 6; i++) {
+            const d = data[i];
+            if (!d) continue;
+            spells[i].name = d.name || spells[i].name;
+            spells[i].cost = d.cost || spells[i].cost;
+            if (d.trees) {
+                spells[i].trees = {
+                    x: d.trees.x ? Blocks.cloneNode(d.trees.x) : spells[i].trees.x,
+                    y: d.trees.y ? Blocks.cloneNode(d.trees.y) : spells[i].trees.y,
+                    emit: d.trees.emit ? Blocks.cloneNode(d.trees.emit) : spells[i].trees.emit,
+                    width: d.trees.width ? Blocks.cloneNode(d.trees.width) : spells[i].trees.width,
+                };
+            }
+            editors[i] = {};
+        }
+        return true;
+    }
+
+    function saveToLocalStorage() {
+        try {
+            localStorage.setItem('arcform-spellbook', JSON.stringify(serializeSpellbook()));
+        } catch(e) {}
+    }
+
+    function loadFromLocalStorage() {
+        try {
+            const raw = localStorage.getItem('arcform-spellbook');
+            if (!raw) return false;
+            return deserializeSpellbook(JSON.parse(raw));
+        } catch(e) { return false; }
+    }
+
+    function exportSpellbook() {
+        try {
+            const data = JSON.stringify(serializeSpellbook(), null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'my-spells.spellbook';
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch(e) {}
+    }
+
+    function importSpellbook() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.spellbook,.json';
+        input.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const data = JSON.parse(ev.target.result);
+                    if (deserializeSpellbook(data)) {
+                        buildUI();
+                    }
+                } catch(err) { console.warn('Invalid spellbook file'); }
+            };
+            reader.readAsText(file);
+        });
+        input.click();
     }
 
     return { init, show, hide, compileSpells, updateStatus, resetReady, isReady: () => ready };

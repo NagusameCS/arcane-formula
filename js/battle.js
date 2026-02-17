@@ -606,7 +606,9 @@ const Battle = (() => {
     }
 
     function updatePassive(dt) {
-        if (Math.random() < 0.3) arenaParticles.push({ x: Math.random()*ARENA_W, y: ARENA_H + 10, vx: 0, vy: -10-Math.random()*20, life: 2+Math.random()*3, maxLife: 5, size: 1+Math.random(), color:'#ffd700' });
+        const density = (typeof window !== 'undefined' && window.GameSettings) ? window.GameSettings.particleDensity : 'high';
+        const ambientChance = density === 'low' ? 0.05 : density === 'medium' ? 0.15 : 0.3;
+        if (arenaParticles.length < 300 && Math.random() < ambientChance) arenaParticles.push({ x: Math.random()*ARENA_W, y: ARENA_H + 10, vx: 0, vy: -10-Math.random()*20, life: 2+Math.random()*3, maxLife: 5, size: 1+Math.random(), color:'#ffd700' });
         for (let i = arenaParticles.length - 1; i >= 0; i--) {
             const p = arenaParticles[i];
             p.x += (p.vx||0)*0.016; p.y += p.vy*0.016; p.life -= 0.016;

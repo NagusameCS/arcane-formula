@@ -234,6 +234,10 @@ const Campaign = (() => {
         Enemies.reset();
         Enemies.spawnFromDungeon(currentDungeon);
 
+        // Set player arcon color from network
+        const playerColor = (typeof Network !== 'undefined' && Network.getColor) ? Network.getColor() : '#4488ff';
+        ArconSystem.setOwnerColor('player', playerColor);
+
         ArconSystem.onManaReturn('player', (count) => {
             player.mana = Math.min(getMaxMana(), player.mana + count);
         });
@@ -655,6 +659,7 @@ const Campaign = (() => {
                 hp: player.hp, mana: player.mana,
                 dashing: player.dashing,
                 level: playerLevel,
+                color: (typeof Network !== 'undefined') ? Network.getColor() : '#4488ff',
             });
         }
     }
@@ -865,21 +870,29 @@ const Campaign = (() => {
             case 'campaign-state': {
                 let ally = allies.find(a => a.id === pid);
                 if (!ally) {
+                    // Assign a unique color based on ally index
+                    const allyIdx = allies.length + 1;
+                    const colors = (typeof Network !== 'undefined' && Network.PARTY_COLORS) ? Network.PARTY_COLORS : ['#4488ff','#ff4444','#44cc66','#ff88ff','#ffaa22','#22ddff'];
+                    const allyColor = data.color || colors[allyIdx % colors.length];
                     ally = {
                         id: pid, hp: getMaxHP(), maxHp: getMaxHP(),
                         mana: getMaxMana(), hitRadius: 10,
                         x: data.x, y: data.y, hitFlash: 0, dashing: data.dashing,
                         level: data.level || 1,
+                        peerColor: allyColor,
+                        peerAccent: allyColor + '88',
                     };
                     allies.push(ally);
                     ArconSystem.onManaReturn(pid, (count) => {
                         ally.mana = Math.min(getMaxMana(), ally.mana + count);
                     });
+                    ArconSystem.setOwnerColor(pid, allyColor);
                 }
                 ally.x = data.x; ally.y = data.y;
                 ally.hp = data.hp; ally.mana = data.mana;
                 ally.dashing = data.dashing;
                 ally.level = data.level || ally.level;
+                if (data.color && !ally.botColor) { ally.peerColor = data.color; ally.peerAccent = data.color + '88'; }
                 break;
             }
             case 'campaign-cast': {
@@ -1035,13 +1048,15 @@ const Campaign = (() => {
         // Allies (including bots)
         for (const ally of allies) {
             if (ally.hp <= 0) continue; // Don't render dead bots
-            const bodyCol = ally.botColor || '#44cc66';
-            const accCol = ally.botAccent || '#88ff88';
+            const bodyCol = ally.peerColor || ally.botColor || '#44cc66';
+            const accCol = ally.peerAccent || ally.botAccent || '#88ff88';
             renderCampaignMage(ctx, ally, cam, ZOOM, bodyCol, accCol);
         }
 
         // Player
-        renderCampaignMage(ctx, player, cam, ZOOM, '#4488ff', '#88bbff');
+        const myCol = (typeof Network !== 'undefined' && Network.getColor) ? Network.getColor() : '#4488ff';
+        const myAccent = myCol.length >= 7 ? myCol + '88' : '#88bbff';
+        renderCampaignMage(ctx, player, cam, ZOOM, myCol, myAccent);
 
         // ── MELEE SLASH ARC ──
         if (meleeTimer > 0) {

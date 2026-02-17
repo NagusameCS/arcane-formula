@@ -30,9 +30,9 @@
                 Intro.update(dt);
                 if (Intro.isDone()) { state = 'mode-select'; showModeSelect(); }
                 break;
-            case 'battle':   Battle.update(dt);   break;
-            case 'campaign': Campaign.update(dt);  break;
-            case 'sandbox':  Sandbox.update(dt);   break;
+            case 'battle':   if (!paused) Battle.update(dt);   break;
+            case 'campaign': if (!paused) Campaign.update(dt);  break;
+            case 'sandbox':  if (!paused) Sandbox.update(dt);   break;
         }
 
         ctx.clearRect(0, 0, W, H);
@@ -46,6 +46,16 @@
             case 'campaign': Campaign.render(ctx, W, H); break;
             case 'sandbox':  Sandbox.render(ctx);         break;
         }
+
+        // FPS counter
+        if (settings.showFps) {
+            const fps = Math.round(1 / Math.max(dt, 0.001));
+            ctx.fillStyle = '#ffd700';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('FPS: ' + fps, 8, 16);
+        }
+
         requestAnimationFrame(gameLoop);
     }
     requestAnimationFrame(gameLoop);
@@ -59,6 +69,11 @@
         const btn = document.getElementById('modeContinue');
         if (btn && typeof Campaign !== 'undefined' && Campaign.hasSave()) btn.classList.remove('hidden');
         else if (btn) btn.classList.add('hidden');
+
+        // First-time tutorial
+        if (typeof Tutorial !== 'undefined' && Tutorial.isFirstTime()) {
+            Tutorial.start(); // will auto-dismiss
+        }
     }
 
     document.getElementById('modePvp').addEventListener('click', () => {
@@ -127,6 +142,18 @@
 
         // Show mode picker only for PvP
         document.getElementById('partyModePicker').classList.toggle('hidden', gameMode !== 'pvp');
+
+        // Party leader enforcement: only host can pick mode and start game
+        const isLeader = !Network.isConnected() || Network.isHost();
+        document.getElementById('partyStartBtn').textContent = isLeader ? 'START GAME' : 'WAITING FOR HOST…';
+        document.getElementById('partyStartBtn').disabled = !isLeader;
+        document.getElementById('partyStartBtn').style.opacity = isLeader ? '1' : '0.4';
+        // Disable mode buttons for non-host
+        document.querySelectorAll('.party-mode-btn').forEach(btn => {
+            btn.disabled = !isLeader;
+            btn.style.pointerEvents = isLeader ? 'auto' : 'none';
+            btn.style.opacity = isLeader ? '1' : '0.6';
+        });
     }
 
     // ── Party mode picker buttons ──
@@ -182,6 +209,27 @@
             }
             if (data.type === 'start-game') {
                 if (state === 'spellbook') startGame();
+                return;
+            }
+            if (data.type === 'host-start') {
+                // Host picked the mode — adopt it and go to spellbook
+                gameMode = data.gameMode || 'pvp';
+                pvpMode  = data.pvpMode  || 'ffa';
+                if (state === 'lobby') {
+                    sfx();
+                    document.getElementById('lobby').classList.add('hidden');
+                    state = 'spellbook';
+                    Spellbook.init(onPlayerReady);
+                    Spellbook.show();
+                }
+                return;
+            }
+            if (data.type === 'host-exit-to-lobby') {
+                // Host sent everyone back to lobby
+                hideAll();
+                readyPeers = new Set();
+                state = 'lobby';
+                showLobby();
                 return;
             }
             // Game-level routing
@@ -257,7 +305,12 @@
 
     // ── Start button in party panel ──
     document.getElementById('partyStartBtn').addEventListener('click', () => {
+        if (Network.isConnected() && !Network.isHost()) return; // non-host can't start
         sfx();
+        // Broadcast mode choice to all peers so everyone plays the same mode
+        if (Network.isConnected()) {
+            Network.sendNow({ type: 'host-start', gameMode, pvpMode });
+        }
         document.getElementById('lobby').classList.add('hidden');
         state = 'spellbook';
         Spellbook.init(onPlayerReady);
@@ -400,12 +453,158 @@
     //  HELPERS
     // ═══════════════════════════════════════
     function hideAll() {
-        ['mode-select','lobby','hud','campaign-hud','sandbox-hud','victory-screen'].forEach(id => {
+        ['mode-select','lobby','hud','campaign-hud','sandbox-hud','victory-screen','pause-menu','settings-panel'].forEach(id => {
             document.getElementById(id).classList.add('hidden');
         });
     }
 
     function sfx() { if (typeof Audio !== 'undefined') Audio.menuClick(); }
+
+    // ═══════════════════════════════════════
+    //  PAUSE MENU (ESC key)
+    // ═══════════════════════════════════════
+    let paused = false;
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (state === 'battle' || state === 'campaign' || state === 'sandbox') {
+                if (!paused) {
+                    paused = true;
+                    document.getElementById('pause-menu').classList.remove('hidden');
+                } else {
+                    resumeGame();
+                }
+            } else if (paused) {
+                resumeGame();
+            }
+        }
+    });
+
+    function resumeGame() {
+        paused = false;
+        document.getElementById('pause-menu').classList.add('hidden');
+    }
+
+    document.getElementById('pauseResume').addEventListener('click', () => {
+        sfx(); resumeGame();
+    });
+
+    document.getElementById('pauseSpellbook').addEventListener('click', () => {
+        sfx(); resumeGame(); hideAll();
+        readyPeers = new Set();
+        // Broadcast exit to party
+        if (inParty && Network.isConnected()) {
+            Network.sendNow({ type: 'host-exit-to-lobby' });
+        }
+        state = 'spellbook';
+        Spellbook.init(onPlayerReady);
+        Spellbook.show();
+    });
+
+    document.getElementById('pauseMenu').addEventListener('click', () => {
+        sfx(); resumeGame(); hideAll();
+        readyPeers = new Set();
+        if (inParty && Network.isConnected()) {
+            Network.sendNow({ type: 'host-exit-to-lobby' });
+            state = 'lobby';
+            showLobby();
+        } else {
+            state = 'mode-select';
+            showModeSelect();
+        }
+    });
+
+    // ═══════════════════════════════════════
+    //  SETTINGS PANEL
+    // ═══════════════════════════════════════
+    const SETTINGS_KEY = 'arcform-settings';
+    let settings = {
+        particleDensity: 'high', // low, medium, high
+        screenShake: true,
+        showFps: false,
+    };
+
+    // Load settings from localStorage
+    try {
+        const saved = localStorage.getItem(SETTINGS_KEY);
+        if (saved) Object.assign(settings, JSON.parse(saved));
+    } catch(e) {}
+
+    function saveSettings() {
+        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch(e) {}
+    }
+
+    // Expose settings globally for other modules
+    window.GameSettings = settings;
+
+    document.getElementById('settingsBtn').addEventListener('click', () => {
+        sfx();
+        showSettingsPanel();
+    });
+
+    document.getElementById('settingsClose').addEventListener('click', () => {
+        sfx();
+        document.getElementById('settings-panel').classList.add('hidden');
+    });
+
+    function showSettingsPanel() {
+        const el = document.getElementById('settingsContent');
+        el.innerHTML = '';
+
+        // Particle density
+        const r1 = document.createElement('div');
+        r1.className = 'settings-row';
+        r1.innerHTML = '<label>Particle Density</label>';
+        const sel = document.createElement('select');
+        ['low','medium','high'].forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v; opt.textContent = v.toUpperCase();
+            if (settings.particleDensity === v) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', () => { settings.particleDensity = sel.value; saveSettings(); });
+        r1.appendChild(sel);
+        el.appendChild(r1);
+
+        // Screen shake
+        const r2 = document.createElement('div');
+        r2.className = 'settings-row';
+        r2.innerHTML = '<label>Screen Shake</label>';
+        const cb1 = document.createElement('input');
+        cb1.type = 'checkbox'; cb1.checked = settings.screenShake;
+        cb1.addEventListener('change', () => { settings.screenShake = cb1.checked; saveSettings(); });
+        r2.appendChild(cb1);
+        el.appendChild(r2);
+
+        // Show FPS
+        const r3 = document.createElement('div');
+        r3.className = 'settings-row';
+        r3.innerHTML = '<label>Show FPS</label>';
+        const cb2 = document.createElement('input');
+        cb2.type = 'checkbox'; cb2.checked = settings.showFps;
+        cb2.addEventListener('change', () => { settings.showFps = cb2.checked; saveSettings(); });
+        r3.appendChild(cb2);
+        el.appendChild(r3);
+
+        // Replay tutorial
+        const r4 = document.createElement('div');
+        r4.className = 'settings-row';
+        r4.innerHTML = '<label>Tutorial</label>';
+        const tutBtn = document.createElement('button');
+        tutBtn.className = 'ws-btn';
+        tutBtn.textContent = 'REPLAY TUTORIAL';
+        tutBtn.addEventListener('click', () => {
+            if (typeof Tutorial !== 'undefined') {
+                Tutorial.resetTutorial();
+                document.getElementById('settings-panel').classList.add('hidden');
+                Tutorial.start();
+            }
+        });
+        r4.appendChild(tutBtn);
+        el.appendChild(r4);
+
+        document.getElementById('settings-panel').classList.remove('hidden');
+    }
 
     // Expose Game API for sandbox back-to-menu & victory back-to-party
     window.Game = {
