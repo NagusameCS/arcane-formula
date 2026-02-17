@@ -19,6 +19,9 @@ const Dungeon = (() => {
         TORCH_LIT: 7, BOSS_DOOR: 8, SPAWN: 9,
         SWITCH_OFF: 10, SWITCH_ON: 11, GATE_CLOSED: 12, GATE_OPEN: 13,
         MINIBOSS_SPAWN: 14,
+        PORTAL_A: 15, PORTAL_B: 16, // Non-Euclidean portal pairs
+        PRESSURE_PLATE: 17, CRACKED_FLOOR: 18, SPIKE_TRAP: 19,
+        RUNE_TILE: 20, // Puzzle rune (step in sequence)
     };
 
     const FLOOR_THEMES = {
@@ -68,11 +71,15 @@ const Dungeon = (() => {
 
     const FLOOR_ORDER = ['egypt', 'hades', 'jungle', 'light', 'cyber', 'stone'];
 
-    const MAP_W = 80, MAP_H = 60;
+    const MAP_W = 120, MAP_H = 90;
     const TILE_SIZE = 16;
-    const MIN_ROOM = 6, MAX_ROOM = 14;
-    const BOSS_ROOM_SIZE = 20;
+    const MIN_ROOM = 6, MAX_ROOM = 16;
+    const BOSS_ROOM_SIZE = 22;
     const ZOOM = 2.0; // Camera zoom factor
+    const GRID_COLS = 4, GRID_ROWS = 4; // Bigger grid for more rooms
+
+    // Portal link registry: { pairId: { a: {tx,ty}, b: {tx,ty} } }
+    let portalLinks = {};
 
     // -- GENERATOR --
     function generate(floorIndex) {
@@ -87,46 +94,105 @@ const Dungeon = (() => {
 
         const rooms = [];
         const spawnPoints = [];
+        portalLinks = {};
 
-        // Generate rooms using 9ths placement
-        const cellW = Math.floor(MAP_W / 3);
-        const cellH = Math.floor(MAP_H / 3);
+        // Generate rooms using NxN grid placement
+        const cellW = Math.floor(MAP_W / GRID_COLS);
+        const cellH = Math.floor(MAP_H / GRID_ROWS);
 
-        for (let cy = 0; cy < 3; cy++) {
-            for (let cx = 0; cx < 3; cx++) {
-                if (cx === 1 && cy === 1) continue; // Reserve center for boss
-                if (sRand() < 0.15 && rooms.length >= 5) continue;
+        // Reserve one cell for boss (center-ish)
+        const bossCX = Math.floor(GRID_COLS / 2);
+        const bossCY = Math.floor(GRID_ROWS / 2);
 
-                const rw = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
-                const rh = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
-                const rx = cx * cellW + 2 + Math.floor(sRand() * (cellW - rw - 4));
-                const ry = cy * cellH + 2 + Math.floor(sRand() * (cellH - rh - 4));
+        for (let cy = 0; cy < GRID_ROWS; cy++) {
+            for (let cx = 0; cx < GRID_COLS; cx++) {
+                if (cx === bossCX && cy === bossCY) continue; // Reserve for boss
+                if (sRand() < 0.1 && rooms.length >= 8) continue; // Occasional skip
 
-                if (rx < 1 || ry < 1 || rx + rw >= MAP_W - 1 || ry + rh >= MAP_H - 1) continue;
+                // Sometimes make L-shaped or irregular rooms
+                const shapeRoll = sRand();
+                if (shapeRoll < 0.2 && rooms.length > 2) {
+                    // L-shaped room: two overlapping rects
+                    const rw1 = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM - 2));
+                    const rh1 = MIN_ROOM + Math.floor(sRand() * 4);
+                    const rw2 = MIN_ROOM + Math.floor(sRand() * 4);
+                    const rh2 = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM - 2));
+                    const rx = cx * cellW + 2 + Math.floor(sRand() * Math.max(1, cellW - Math.max(rw1, rw2) - 4));
+                    const ry = cy * cellH + 2 + Math.floor(sRand() * Math.max(1, cellH - Math.max(rh1, rh2) - 4));
+                    if (rx < 1 || ry < 1 || rx + Math.max(rw1, rw2) >= MAP_W - 1 || ry + Math.max(rh1, rh2) >= MAP_H - 1) {
+                        // Fallback to normal room
+                        const rw = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                        const rh = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                        const rx2 = cx * cellW + 2 + Math.floor(sRand() * Math.max(1, cellW - rw - 4));
+                        const ry2 = cy * cellH + 2 + Math.floor(sRand() * Math.max(1, cellH - rh - 4));
+                        if (rx2 >= 1 && ry2 >= 1 && rx2 + rw < MAP_W - 1 && ry2 + rh < MAP_H - 1) {
+                            const room = { x: rx2, y: ry2, w: rw, h: rh, cx: rx2 + Math.floor(rw/2), cy: ry2 + Math.floor(rh/2) };
+                            rooms.push(room);
+                            carveRoom(map, room);
+                        }
+                    } else {
+                        const room1 = { x: rx, y: ry, w: rw1, h: rh1 };
+                        const room2 = { x: rx, y: ry, w: rw2, h: rh2 };
+                        carveRoom(map, room1);
+                        carveRoom(map, room2);
+                        const combined = {
+                            x: rx, y: ry,
+                            w: Math.max(rw1, rw2), h: Math.max(rh1, rh2),
+                            cx: rx + Math.floor(Math.max(rw1, rw2) / 2),
+                            cy: ry + Math.floor(Math.max(rh1, rh2) / 2),
+                        };
+                        rooms.push(combined);
+                    }
+                } else {
+                    // Normal rectangular room
+                    const rw = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                    const rh = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                    const rx = cx * cellW + 2 + Math.floor(sRand() * Math.max(1, cellW - rw - 4));
+                    const ry = cy * cellH + 2 + Math.floor(sRand() * Math.max(1, cellH - rh - 4));
 
-                const room = { x: rx, y: ry, w: rw, h: rh, cx: rx + Math.floor(rw/2), cy: ry + Math.floor(rh/2) };
-                rooms.push(room);
-                carveRoom(map, room);
+                    if (rx < 1 || ry < 1 || rx + rw >= MAP_W - 1 || ry + rh >= MAP_H - 1) continue;
+
+                    const room = { x: rx, y: ry, w: rw, h: rh, cx: rx + Math.floor(rw/2), cy: ry + Math.floor(rh/2) };
+                    rooms.push(room);
+                    carveRoom(map, room);
+                }
             }
         }
 
         // Boss room in center
         const bossRoom = {
-            x: Math.floor(MAP_W/2) - Math.floor(BOSS_ROOM_SIZE/2),
-            y: Math.floor(MAP_H/2) - Math.floor(BOSS_ROOM_SIZE/2),
+            x: bossCX * cellW + Math.floor(cellW/2) - Math.floor(BOSS_ROOM_SIZE/2),
+            y: bossCY * cellH + Math.floor(cellH/2) - Math.floor(BOSS_ROOM_SIZE/2),
             w: BOSS_ROOM_SIZE, h: BOSS_ROOM_SIZE,
-            cx: Math.floor(MAP_W/2), cy: Math.floor(MAP_H/2),
+            cx: bossCX * cellW + Math.floor(cellW/2),
+            cy: bossCY * cellH + Math.floor(cellH/2),
             isBoss: true,
         };
         rooms.push(bossRoom);
         carveRoom(map, bossRoom);
 
-        // Connect rooms with corridors
-        for (let i = 0; i < rooms.length - 1; i++) {
-            connectRooms(map, rooms[i], rooms[i + 1]);
+        // Connect rooms with corridors (MST-like: connect each to nearest unconnected)
+        const connected = [0];
+        const unconnected = rooms.map((_, i) => i).slice(1);
+        while (unconnected.length > 0) {
+            let bestDist = Infinity, bestC = 0, bestU = 0, bestUI = 0;
+            for (const ci of connected) {
+                for (let ui = 0; ui < unconnected.length; ui++) {
+                    const ri = unconnected[ui];
+                    const dx = rooms[ci].cx - rooms[ri].cx;
+                    const dy = rooms[ci].cy - rooms[ri].cy;
+                    const d = dx * dx + dy * dy;
+                    if (d < bestDist) { bestDist = d; bestC = ci; bestU = ri; bestUI = ui; }
+                }
+            }
+            connectRooms(map, rooms[bestC], rooms[bestU]);
+            connected.push(bestU);
+            unconnected.splice(bestUI, 1);
         }
-        // Extra connections for loops
-        for (let i = 0; i < 3; i++) {
+
+        // Extra connections for loops (more than before for larger map)
+        const extraCorridors = 4 + Math.floor(sRand() * 4);
+        for (let i = 0; i < extraCorridors; i++) {
             const a = rooms[Math.floor(sRand() * rooms.length)];
             const b = rooms[Math.floor(sRand() * rooms.length)];
             if (a !== b) connectRooms(map, a, b);
@@ -163,18 +229,31 @@ const Dungeon = (() => {
                 if (map[cy] && map[cy][cx] === TILE.FLOOR) map[cy][cx] = TILE.CHEST;
             }
 
-            // Traps
-            if (sRand() < 0.3) {
-                for (let t = 0; t < 3; t++) {
+            // Traps (more variety)
+            if (sRand() < 0.35) {
+                const trapCount = 2 + Math.floor(sRand() * 4);
+                for (let t = 0; t < trapCount; t++) {
                     const tx = room.x + 1 + Math.floor(sRand() * (room.w - 2));
                     const ty = room.y + 1 + Math.floor(sRand() * (room.h - 2));
-                    if (map[ty] && map[ty][tx] === TILE.FLOOR) map[ty][tx] = TILE.TRAP;
+                    if (map[ty] && map[ty][tx] === TILE.FLOOR) {
+                        map[ty][tx] = sRand() < 0.4 ? TILE.SPIKE_TRAP : TILE.TRAP;
+                    }
                 }
             }
 
-            // Enemy spawn points -- MUCH more enemies
+            // Cracked floor (environmental hazard)
+            if (sRand() < 0.15) {
+                const crackCount = 2 + Math.floor(sRand() * 3);
+                for (let c = 0; c < crackCount; c++) {
+                    const cx = room.x + 1 + Math.floor(sRand() * (room.w - 2));
+                    const cy = room.y + 1 + Math.floor(sRand() * (room.h - 2));
+                    if (map[cy] && map[cy][cx] === TILE.FLOOR) map[cy][cx] = TILE.CRACKED_FLOOR;
+                }
+            }
+
+            // Enemy spawn points -- scaled to room size
             const minEnemies = Math.max(2, Math.floor(area / 25));
-            const maxEnemies = Math.max(3, Math.floor(area / 15));
+            const maxEnemies = Math.max(3, Math.floor(area / 12));
             const count = minEnemies + Math.floor(sRand() * (maxEnemies - minEnemies + 1));
             for (let e = 0; e < count; e++) {
                 spawnPoints.push({
@@ -193,51 +272,146 @@ const Dungeon = (() => {
         const exitRoom = rooms[Math.max(0, rooms.length - 2)];
         map[exitRoom.cy][exitRoom.cx] = TILE.STAIRS_DOWN;
 
-        // ── PUZZLE ROOMS ──
-        // Pick 1-2 rooms and convert them to puzzle rooms (switch + gate + chest reward)
+        // ── PUZZLE ROOMS (much improved variety) ──
         const puzzleRooms = [];
         const normalRooms = rooms.filter(r => !r.isBoss && r !== startRoom && r !== exitRoom);
-        const puzzleCount = Math.min(2, Math.floor(normalRooms.length / 3));
+        const puzzleCount = Math.min(4, Math.max(2, Math.floor(normalRooms.length / 3)));
         const shuffled = normalRooms.sort(() => sRand() - 0.5);
+
+        const PUZZLE_TYPES = ['switch_gate', 'multi_switch', 'pressure_sequence', 'trap_gauntlet', 'rune_order'];
+
         for (let pi = 0; pi < puzzleCount && pi < shuffled.length; pi++) {
             const pr = shuffled[pi];
             pr.isPuzzle = true;
+            const puzzleType = PUZZLE_TYPES[Math.floor(sRand() * PUZZLE_TYPES.length)];
+            pr.puzzleType = puzzleType;
             puzzleRooms.push(pr);
 
-            // Place a switch on one side of the room
-            const switchX = pr.x + 1;
-            const switchY = pr.y + Math.floor(pr.h / 2);
-            if (map[switchY] && map[switchY][switchX] === TILE.FLOOR) {
-                map[switchY][switchX] = TILE.SWITCH_OFF;
-            }
-
-            // Place a gate on the opposite side blocking a chest
-            const gateX = pr.x + pr.w - 2;
-            const gateY = pr.y + Math.floor(pr.h / 2);
-            if (map[gateY] && map[gateY][gateX] === TILE.FLOOR) {
-                map[gateY][gateX] = TILE.GATE_CLOSED;
-            }
-
-            // Chest behind gate
-            const rewardX = pr.x + pr.w - 2;
-            const rewardY = pr.y + Math.floor(pr.h / 2) - 1;
-            if (map[rewardY] && map[rewardY][rewardX] === TILE.FLOOR) {
-                map[rewardY][rewardX] = TILE.CHEST;
+            switch (puzzleType) {
+                case 'switch_gate': {
+                    // Classic: hit switch to open gate blocking reward
+                    const switchX = pr.x + 1;
+                    const switchY = pr.y + Math.floor(pr.h / 2);
+                    if (map[switchY] && map[switchY][switchX] === TILE.FLOOR) {
+                        map[switchY][switchX] = TILE.SWITCH_OFF;
+                    }
+                    const gateX = pr.x + pr.w - 2;
+                    const gateY = pr.y + Math.floor(pr.h / 2);
+                    if (map[gateY] && map[gateY][gateX] === TILE.FLOOR) {
+                        map[gateY][gateX] = TILE.GATE_CLOSED;
+                    }
+                    const rewardX = pr.x + pr.w - 2;
+                    const rewardY = pr.y + Math.floor(pr.h / 2) - 1;
+                    if (map[rewardY] && map[rewardY][rewardX] === TILE.FLOOR) {
+                        map[rewardY][rewardX] = TILE.CHEST;
+                    }
+                    break;
+                }
+                case 'multi_switch': {
+                    // Multiple switches (2-3) all must be ON to open gate
+                    const switchCount = 2 + Math.floor(sRand() * 2);
+                    pr.requiredSwitches = switchCount;
+                    pr.switchesActivated = 0;
+                    for (let si = 0; si < switchCount; si++) {
+                        const sx = pr.x + 1 + Math.floor(sRand() * (pr.w - 3));
+                        const sy = pr.y + 1 + Math.floor(sRand() * (pr.h - 3));
+                        if (map[sy] && map[sy][sx] === TILE.FLOOR) {
+                            map[sy][sx] = TILE.SWITCH_OFF;
+                        }
+                    }
+                    const gateX = pr.x + pr.w - 2;
+                    const gateY = pr.y + Math.floor(pr.h / 2);
+                    if (map[gateY] && map[gateY][gateX] === TILE.FLOOR) {
+                        map[gateY][gateX] = TILE.GATE_CLOSED;
+                    }
+                    const rX = pr.x + pr.w - 2;
+                    const rY = pr.y + Math.floor(pr.h / 2) - 1;
+                    if (map[rY] && map[rY][rX] === TILE.FLOOR) map[rY][rX] = TILE.CHEST;
+                    break;
+                }
+                case 'pressure_sequence': {
+                    // Step on pressure plates in order (marked 1,2,3)
+                    pr.plateSequence = [];
+                    pr.plateProgress = 0;
+                    const plateCount = 3;
+                    for (let pi2 = 0; pi2 < plateCount; pi2++) {
+                        const px = pr.x + 2 + Math.floor(sRand() * (pr.w - 4));
+                        const py = pr.y + 2 + Math.floor(sRand() * (pr.h - 4));
+                        if (map[py] && map[py][px] === TILE.FLOOR) {
+                            map[py][px] = TILE.PRESSURE_PLATE;
+                            pr.plateSequence.push({ x: px, y: py, order: pi2 + 1 });
+                        }
+                    }
+                    // Reward chest
+                    const rX = pr.x + Math.floor(pr.w / 2);
+                    const rY = pr.y + 1;
+                    if (map[rY] && map[rY][rX] === TILE.FLOOR) {
+                        map[rY][rX] = TILE.GATE_CLOSED;
+                    }
+                    if (map[rY - 1] && rY - 1 >= pr.y && map[rY - 1][rX] === TILE.FLOOR) {
+                        // place chest just above gate if room allows, else below
+                    }
+                    const crX = pr.x + Math.floor(pr.w / 2) + 1;
+                    const crY = pr.y + 1;
+                    if (map[crY] && map[crY][crX] === TILE.FLOOR) map[crY][crX] = TILE.CHEST;
+                    break;
+                }
+                case 'trap_gauntlet': {
+                    // Room filled with spike traps with a reward at the end
+                    for (let ty = pr.y + 1; ty < pr.y + pr.h - 1; ty++) {
+                        for (let tx = pr.x + 1; tx < pr.x + pr.w - 1; tx++) {
+                            if (map[ty] && map[ty][tx] === TILE.FLOOR && sRand() < 0.4) {
+                                map[ty][tx] = TILE.SPIKE_TRAP;
+                            }
+                        }
+                    }
+                    // Clear a narrow safe path
+                    const pathY = pr.y + Math.floor(pr.h / 2);
+                    for (let tx = pr.x + 1; tx < pr.x + pr.w - 1; tx++) {
+                        if (map[pathY] && map[pathY][tx] !== TILE.VOID) {
+                            if (sRand() < 0.7) map[pathY][tx] = TILE.FLOOR;
+                        }
+                    }
+                    // Reward
+                    const rX = pr.x + pr.w - 2;
+                    const rY = pr.y + Math.floor(pr.h / 2);
+                    if (map[rY] && map[rY][rX] === TILE.FLOOR) map[rY][rX] = TILE.CHEST;
+                    break;
+                }
+                case 'rune_order': {
+                    // Rune tiles that must be stepped on — each lights up
+                    pr.runesActivated = 0;
+                    pr.totalRunes = 0;
+                    const runeCount = 4 + Math.floor(sRand() * 3);
+                    for (let ri = 0; ri < runeCount; ri++) {
+                        const rx = pr.x + 2 + Math.floor(sRand() * (pr.w - 4));
+                        const ry = pr.y + 2 + Math.floor(sRand() * (pr.h - 4));
+                        if (map[ry] && map[ry][rx] === TILE.FLOOR) {
+                            map[ry][rx] = TILE.RUNE_TILE;
+                            pr.totalRunes++;
+                        }
+                    }
+                    // Gate + chest
+                    const gx = pr.x + Math.floor(pr.w / 2);
+                    const gy = pr.y + pr.h - 2;
+                    if (map[gy] && map[gy][gx] === TILE.FLOOR) map[gy][gx] = TILE.GATE_CLOSED;
+                    if (map[gy] && map[gy][gx + 1] === TILE.FLOOR) map[gy][gx + 1] = TILE.CHEST;
+                    break;
+                }
             }
         }
 
         // ── MINIBOSS ROOMS ──
-        // Pick 1 room for a miniboss (stronger enemy guarding better loot)
         const mbCandidates = normalRooms.filter(r => !r.isPuzzle);
-        if (mbCandidates.length > 0) {
+        const mbCount = Math.min(2, Math.max(1, Math.floor(mbCandidates.length / 4)));
+        for (let mi = 0; mi < mbCount && mi < mbCandidates.length; mi++) {
             const mbRoom = mbCandidates[Math.floor(sRand() * mbCandidates.length)];
+            if (mbRoom.isMiniboss) continue;
             mbRoom.isMiniboss = true;
-            // Place miniboss spawn marker
             if (map[mbRoom.cy] && map[mbRoom.cy][mbRoom.cx] === TILE.FLOOR) {
                 map[mbRoom.cy][mbRoom.cx] = TILE.MINIBOSS_SPAWN;
             }
             spawnPoints.push({ x: mbRoom.cx, y: mbRoom.cy, type: 'miniboss' });
-            // Add extra loot
             const lootX = mbRoom.x + Math.floor(mbRoom.w / 2) + 1;
             const lootY = mbRoom.y + Math.floor(mbRoom.h / 2) + 1;
             if (map[lootY] && map[lootY][lootX] === TILE.FLOOR) {
@@ -245,10 +419,47 @@ const Dungeon = (() => {
             }
         }
 
+        // ── NON-EUCLIDEAN PORTALS ──
+        // Place portal pairs that connect distant parts of the map
+        const portalPairCount = 2 + Math.floor(sRand() * 2); // 2-3 portal pairs
+        const portalCandidates = rooms.filter(r => !r.isBoss && !r.isPuzzle && !r.isMiniboss && r !== startRoom);
+        for (let pp = 0; pp < portalPairCount && portalCandidates.length >= 2; pp++) {
+            // Pick two distant rooms
+            let bestPair = null, bestDist = 0;
+            for (let tries = 0; tries < 10; tries++) {
+                const ia = Math.floor(sRand() * portalCandidates.length);
+                const ib = Math.floor(sRand() * portalCandidates.length);
+                if (ia === ib) continue;
+                const ra = portalCandidates[ia], rb = portalCandidates[ib];
+                const dx = ra.cx - rb.cx, dy = ra.cy - rb.cy;
+                const d = dx * dx + dy * dy;
+                if (d > bestDist) { bestDist = d; bestPair = [ia, ib]; }
+            }
+            if (!bestPair) continue;
+            const rA = portalCandidates[bestPair[0]];
+            const rB = portalCandidates[bestPair[1]];
+            // Place portal tiles
+            const pax = rA.x + 1 + Math.floor(sRand() * (rA.w - 3));
+            const pay = rA.y + 1 + Math.floor(sRand() * (rA.h - 3));
+            const pbx = rB.x + 1 + Math.floor(sRand() * (rB.w - 3));
+            const pby = rB.y + 1 + Math.floor(sRand() * (rB.h - 3));
+            if (map[pay] && map[pay][pax] === TILE.FLOOR && map[pby] && map[pby][pbx] === TILE.FLOOR) {
+                map[pay][pax] = TILE.PORTAL_A;
+                map[pby][pbx] = TILE.PORTAL_B;
+                portalLinks[pp] = {
+                    a: { tx: pax, ty: pay },
+                    b: { tx: pbx, ty: pby },
+                };
+            }
+            // Remove used rooms from candidates
+            portalCandidates.splice(Math.max(bestPair[0], bestPair[1]), 1);
+            portalCandidates.splice(Math.min(bestPair[0], bestPair[1]), 1);
+        }
+
         return {
             map, rooms, spawnPoints, theme, floorIndex,
             startX: startRoom.cx, startY: startRoom.cy,
-            bossRoom, puzzleRooms,
+            bossRoom, puzzleRooms, portalLinks,
             pixelW: MAP_W * TILE_SIZE, pixelH: MAP_H * TILE_SIZE,
         };
     }
@@ -498,6 +709,83 @@ const Dungeon = (() => {
                 ctx.fillRect(px + 5, py + 8, S - 10, 2);
                 ctx.globalAlpha = 1;
                 break;
+            case TILE.PORTAL_A:
+            case TILE.PORTAL_B: {
+                ctx.fillStyle = theme.floor;
+                ctx.fillRect(px, py, S, S);
+                // Swirling portal effect
+                const portalColor = tile === TILE.PORTAL_A ? '#8844ff' : '#ff44aa';
+                const portalColor2 = tile === TILE.PORTAL_A ? '#aa66ff' : '#ff88cc';
+                ctx.fillStyle = portalColor;
+                ctx.globalAlpha = 0.6;
+                ctx.fillRect(px + 2, py + 2, S - 4, S - 4);
+                ctx.fillStyle = portalColor2;
+                ctx.globalAlpha = 0.4;
+                ctx.fillRect(px + 4, py + 4, S - 8, S - 8);
+                ctx.fillStyle = '#fff';
+                ctx.globalAlpha = 0.5;
+                ctx.fillRect(px + S/2 - 1, py + S/2 - 1, 2, 2);
+                // Glow
+                ctx.globalAlpha = 0.08;
+                ctx.fillStyle = portalColor;
+                ctx.fillRect(px - S, py - S, S * 3, S * 3);
+                ctx.globalAlpha = 1;
+                break;
+            }
+            case TILE.PRESSURE_PLATE:
+                ctx.fillStyle = theme.floor;
+                ctx.fillRect(px, py, S, S);
+                ctx.fillStyle = '#aa8844';
+                ctx.globalAlpha = 0.5;
+                ctx.fillRect(px + 2, py + 2, S - 4, S - 4);
+                ctx.fillStyle = '#ddbb66';
+                ctx.globalAlpha = 0.6;
+                ctx.fillRect(px + 3, py + 3, S - 6, S - 6);
+                ctx.globalAlpha = 1;
+                break;
+            case TILE.CRACKED_FLOOR:
+                ctx.fillStyle = theme.floor;
+                ctx.fillRect(px, py, S, S);
+                ctx.globalAlpha = 0.3;
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.moveTo(px + 3, py + 2);
+                ctx.lineTo(px + S/2, py + S/2);
+                ctx.lineTo(px + S - 3, py + 4);
+                ctx.moveTo(px + S/2, py + S/2);
+                ctx.lineTo(px + 4, py + S - 3);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+                break;
+            case TILE.SPIKE_TRAP:
+                ctx.fillStyle = theme.floor;
+                ctx.fillRect(px, py, S, S);
+                // Spike pattern
+                ctx.fillStyle = '#666';
+                ctx.globalAlpha = 0.4;
+                for (let sp = 0; sp < 4; sp++) {
+                    const spx = px + 2 + (sp % 2) * (S - 6);
+                    const spy = py + 2 + Math.floor(sp / 2) * (S - 6);
+                    ctx.fillRect(spx, spy, 2, 2);
+                }
+                ctx.globalAlpha = 1;
+                break;
+            case TILE.RUNE_TILE:
+                ctx.fillStyle = theme.floor;
+                ctx.fillRect(px, py, S, S);
+                // Arcane rune circle
+                ctx.strokeStyle = theme.accent;
+                ctx.globalAlpha = 0.4;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(px + S/2, py + S/2, S/2 - 2, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.fillStyle = theme.accent;
+                ctx.globalAlpha = 0.15;
+                ctx.fillRect(px + 3, py + 3, S - 6, S - 6);
+                ctx.globalAlpha = 1;
+                break;
         }
     }
 
@@ -534,7 +822,10 @@ const Dungeon = (() => {
                tile === TILE.CHEST || tile === TILE.TRAP || tile === TILE.TORCH_LIT ||
                tile === TILE.SPAWN || tile === TILE.BOSS_DOOR ||
                tile === TILE.SWITCH_OFF || tile === TILE.SWITCH_ON ||
-               tile === TILE.GATE_OPEN || tile === TILE.MINIBOSS_SPAWN;
+               tile === TILE.GATE_OPEN || tile === TILE.MINIBOSS_SPAWN ||
+               tile === TILE.PORTAL_A || tile === TILE.PORTAL_B ||
+               tile === TILE.PRESSURE_PLATE || tile === TILE.CRACKED_FLOOR ||
+               tile === TILE.SPIKE_TRAP || tile === TILE.RUNE_TILE;
         // Note: GATE_CLOSED is NOT walkable (blocks passage)
     }
 
@@ -616,6 +907,12 @@ const Dungeon = (() => {
                     case TILE.CHEST:
                         mctx.fillStyle = '#daa520';
                         break;
+                    case TILE.PORTAL_A:
+                        mctx.fillStyle = '#8844ff';
+                        break;
+                    case TILE.PORTAL_B:
+                        mctx.fillStyle = '#ff44aa';
+                        break;
                     default:
                         mctx.fillStyle = 'rgba(80,70,55,0.35)';
                         break;
@@ -692,17 +989,37 @@ const Dungeon = (() => {
     function toggleSwitch(dungeon, tx, ty) {
         if (!dungeon.map[ty] || dungeon.map[ty][tx] !== TILE.SWITCH_OFF) return false;
         dungeon.map[ty][tx] = TILE.SWITCH_ON;
-        // Open all closed gates in the same room
+        // Find which puzzle room this switch belongs to
         for (const room of dungeon.rooms) {
             if (room.isPuzzle && tx >= room.x && tx < room.x + room.w && ty >= room.y && ty < room.y + room.h) {
-                for (let gy = room.y; gy < room.y + room.h; gy++) {
-                    for (let gx = room.x; gx < room.x + room.w; gx++) {
-                        if (dungeon.map[gy][gx] === TILE.GATE_CLOSED) {
-                            dungeon.map[gy][gx] = TILE.GATE_OPEN;
+                if (room.puzzleType === 'multi_switch') {
+                    // Count all switches that are ON in this room
+                    let onCount = 0;
+                    for (let gy = room.y; gy < room.y + room.h; gy++) {
+                        for (let gx = room.x; gx < room.x + room.w; gx++) {
+                            if (dungeon.map[gy][gx] === TILE.SWITCH_ON) onCount++;
+                        }
+                    }
+                    // Only open gates when ALL switches are activated
+                    if (onCount >= (room.requiredSwitches || 2)) {
+                        for (let gy = room.y; gy < room.y + room.h; gy++) {
+                            for (let gx = room.x; gx < room.x + room.w; gx++) {
+                                if (dungeon.map[gy][gx] === TILE.GATE_CLOSED) {
+                                    dungeon.map[gy][gx] = TILE.GATE_OPEN;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Normal single switch: open all gates in room
+                    for (let gy = room.y; gy < room.y + room.h; gy++) {
+                        for (let gx = room.x; gx < room.x + room.w; gx++) {
+                            if (dungeon.map[gy][gx] === TILE.GATE_CLOSED) {
+                                dungeon.map[gy][gx] = TILE.GATE_OPEN;
+                            }
                         }
                     }
                 }
-                // Re-render dungeon tiles
                 preRender(dungeon);
                 return true;
             }
@@ -711,9 +1028,92 @@ const Dungeon = (() => {
         return true;
     }
 
+    // ── RUNE TILE ACTIVATION ──
+    function activateRune(dungeon, tx, ty) {
+        if (!dungeon.map[ty] || dungeon.map[ty][tx] !== TILE.RUNE_TILE) return false;
+        dungeon.map[ty][tx] = TILE.FLOOR; // "Light up" by becoming floor
+        for (const room of dungeon.rooms) {
+            if (room.isPuzzle && room.puzzleType === 'rune_order' &&
+                tx >= room.x && tx < room.x + room.w && ty >= room.y && ty < room.y + room.h) {
+                room.runesActivated = (room.runesActivated || 0) + 1;
+                if (room.runesActivated >= (room.totalRunes || 1)) {
+                    // All runes activated — open gates
+                    for (let gy = room.y; gy < room.y + room.h; gy++) {
+                        for (let gx = room.x; gx < room.x + room.w; gx++) {
+                            if (dungeon.map[gy][gx] === TILE.GATE_CLOSED) {
+                                dungeon.map[gy][gx] = TILE.GATE_OPEN;
+                            }
+                        }
+                    }
+                }
+                preRender(dungeon);
+                return true;
+            }
+        }
+        preRender(dungeon);
+        return true;
+    }
+
+    // ── PRESSURE PLATE HANDLING ──
+    function stepOnPlate(dungeon, tx, ty) {
+        if (!dungeon.map[ty] || dungeon.map[ty][tx] !== TILE.PRESSURE_PLATE) return false;
+        for (const room of dungeon.rooms) {
+            if (room.isPuzzle && room.puzzleType === 'pressure_sequence' &&
+                tx >= room.x && tx < room.x + room.w && ty >= room.y && ty < room.y + room.h) {
+                if (!room.plateSequence) break;
+                const nextIdx = room.plateProgress || 0;
+                const expected = room.plateSequence[nextIdx];
+                if (expected && expected.x === tx && expected.y === ty) {
+                    room.plateProgress = nextIdx + 1;
+                    dungeon.map[ty][tx] = TILE.FLOOR; // Plate depressed
+                    if (room.plateProgress >= room.plateSequence.length) {
+                        // Open gates
+                        for (let gy = room.y; gy < room.y + room.h; gy++) {
+                            for (let gx = room.x; gx < room.x + room.w; gx++) {
+                                if (dungeon.map[gy][gx] === TILE.GATE_CLOSED) {
+                                    dungeon.map[gy][gx] = TILE.GATE_OPEN;
+                                }
+                            }
+                        }
+                    }
+                    preRender(dungeon);
+                    return true;
+                } else {
+                    // Wrong order: reset all plates
+                    room.plateProgress = 0;
+                    for (const p of room.plateSequence) {
+                        if (dungeon.map[p.y] && dungeon.map[p.y][p.x] === TILE.FLOOR) {
+                            dungeon.map[p.y][p.x] = TILE.PRESSURE_PLATE;
+                        }
+                    }
+                    preRender(dungeon);
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    // ── PORTAL TELEPORT ──
+    function checkPortal(dungeon, px, py) {
+        const tx = Math.floor(px / TILE_SIZE);
+        const ty = Math.floor(py / TILE_SIZE);
+        const tile = tileAt(dungeon, tx, ty);
+        if (tile !== TILE.PORTAL_A && tile !== TILE.PORTAL_B) return null;
+        const links = dungeon.portalLinks || portalLinks;
+        for (const pair of Object.values(links)) {
+            if (pair.a.tx === tx && pair.a.ty === ty) {
+                return { x: pair.b.tx * TILE_SIZE + TILE_SIZE / 2, y: pair.b.ty * TILE_SIZE + TILE_SIZE / 2 };
+            }
+            if (pair.b.tx === tx && pair.b.ty === ty) {
+                return { x: pair.a.tx * TILE_SIZE + TILE_SIZE / 2, y: pair.a.ty * TILE_SIZE + TILE_SIZE / 2 };
+            }
+        }
+        return null;
+    }
+
     // ── MINIBOSS CREATION ──
     function getMinibossData(theme, difficulty) {
-        // Minibosses are beefed-up regular enemies with special behavior
         const mbTypes = {
             egypt:  { name: 'Cursed Pharaoh Guard', hp: 150, speed: 55, size: 18, color: '#ffcc00', dmg: 18, behavior: 'dodge', xp: 100 },
             hades:  { name: 'Infernal Warden', hp: 180, speed: 65, size: 18, color: '#ff2200', dmg: 22, behavior: 'charge', xp: 120 },
@@ -735,7 +1135,7 @@ const Dungeon = (() => {
         TILE, FLOOR_THEMES, FLOOR_ORDER, TILE_SIZE, MAP_W, MAP_H, ZOOM,
         generate, preRender, render, updateCamera, tileAt, isWalkable, isWalkableBox,
         clampToWalkable, enforceWorldBounds,
-        toggleSwitch, getMinibossData,
+        toggleSwitch, activateRune, stepOnPlate, checkPortal, getMinibossData,
         getCamera: () => camera,
         renderMinimap, screenToWorld, worldToScreen,
     };

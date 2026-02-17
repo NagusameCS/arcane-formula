@@ -21,7 +21,7 @@ const Battle = (() => {
     const MELEE_ARC = Math.PI * 0.75;
     const MELEE_COOLDOWN = 0.35;
     const MELEE_DURATION = 0.15;
-    const MELEE_DAMAGE = 12;
+    const MELEE_DAMAGE = 6;
 
     let player;
     let enemies = {}; // Map of peerId -> enemy object (supports 2+ players)

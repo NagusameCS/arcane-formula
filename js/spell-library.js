@@ -10,7 +10,7 @@ const SpellLibrary = (() => {
     const _n = n, _v = v, _op = op, _fn = fn;
 
     // ── SPELL CATEGORIES ──
-    const CATEGORIES = ['Offensive', 'Defensive', 'Utility', 'Advanced', 'Chaos'];
+    const CATEGORIES = ['Offensive', 'Defensive', 'Utility', 'Advanced', 'Chaos', 'Gambling'];
 
     // ── THE LIBRARY ──
     const SPELLS = [
@@ -485,6 +485,94 @@ const SpellLibrary = (() => {
             x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', v('rand'), op('*', n(2), v('pi'))), op('*', v('t'), n(1)))), op('*', op('+', n(30), op('*', v('i'), n(3))), fn('min', n(1), v('t'))))),
             y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', v('rand'), op('*', n(2), v('pi'))), op('*', v('t'), n(1)))), op('*', op('+', n(30), op('*', v('i'), n(3))), fn('min', n(1), v('t'))))),
             emit: op('*', v('i'), n(0.04)),
+            width: n(4),
+        },
+
+        // ═══════════════════════════════════════
+        //  GAMBLING — Risk vs reward, random outcomes
+        // ═══════════════════════════════════════
+        {
+            name: 'Coin Flip', category: 'Gambling', cost: 20,
+            desc: 'Either a devastating focused blast or a pathetic puff. 50/50.',
+            // rand > 0.5 → big fast burst, else tiny slow dribble
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', op('+', n(100), op('*', fn('floor', op('*', v('rand'), n(2))), n(300))), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', op('+', n(100), op('*', fn('floor', op('*', v('rand'), n(2))), n(300))), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: op('+', n(2), op('*', fn('floor', op('*', v('rand'), n(2))), n(6))),
+        },
+        {
+            name: 'Dice Roll', category: 'Gambling', cost: 30,
+            desc: 'Fires 1 to 6 random spread projectiles. Roll the dice!',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', v('rand'), n(0.5)), n(0.5)))), op('*', n(250), op('-', v('t'), op('*', v('i'), op('*', n(0.05), op('+', n(1), fn('floor', op('*', v('rand'), n(6)))))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', v('rand'), n(0.5)), n(0.5)))), op('*', n(250), op('-', v('t'), op('*', v('i'), op('*', n(0.05), op('+', n(1), fn('floor', op('*', v('rand'), n(6)))))))))),
+            emit: op('*', v('i'), op('*', n(0.05), op('+', n(1), fn('floor', op('*', v('rand'), n(6)))))),
+            width: n(5),
+        },
+        {
+            name: 'Jackpot', category: 'Gambling', cost: 50,
+            desc: 'Huge mana cost. Tiny chance of massive nova, usually fizzles.',
+            // Most arcons do nothing (emit very late), but if rand > 0.85 they all fire instantly
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                op('*', n(200), fn('max', n(0), op('-', v('t'), op('*', op('-', n(1), fn('floor', op('*', fn('min', n(1), op('*', v('rand'), n(1.2))), n(1)))), n(3))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                op('*', n(200), fn('max', n(0), op('-', v('t'), op('*', op('-', n(1), fn('floor', op('*', fn('min', n(1), op('*', v('rand'), n(1.2))), n(1)))), n(3))))))),
+            emit: n(0),
+            width: op('+', n(3), op('*', fn('floor', op('*', fn('min', n(1), op('*', v('rand'), n(1.2))), n(1))), n(5))),
+        },
+        {
+            name: 'Roulette', category: 'Gambling', cost: 25,
+            desc: 'Arcons spin in a circle — random radius, random speed. Chaotic orbit.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))),
+                op('*', v('t'), op('+', n(2), op('*', v('rand'), n(8)))))),
+                op('+', n(20), op('*', v('rand'), n(80))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))),
+                op('*', v('t'), op('+', n(2), op('*', v('rand'), n(8)))))),
+                op('+', n(20), op('*', v('rand'), n(80))))),
+            emit: n(0),
+            width: n(4),
+        },
+        {
+            name: 'Slot Machine', category: 'Gambling', cost: 35,
+            desc: 'Three bursts in sequence — each randomly strong or weak.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', fn('mod', v('i'), n(3)), n(1)), n(0.2)))),
+                op('*', op('+', n(150), op('*', fn('floor', op('*', v('rand'), n(2))), n(200))),
+                    op('-', v('t'), op('*', fn('floor', op('/', v('i'), n(3))), n(0.15)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', fn('mod', v('i'), n(3)), n(1)), n(0.2)))),
+                op('*', op('+', n(150), op('*', fn('floor', op('*', v('rand'), n(2))), n(200))),
+                    op('-', v('t'), op('*', fn('floor', op('/', v('i'), n(3))), n(0.15)))))),
+            emit: op('*', fn('floor', op('/', v('i'), n(3))), n(0.15)),
+            width: op('+', n(3), op('*', fn('floor', op('*', v('rand'), n(2))), n(4))),
+        },
+        {
+            name: 'Wild Card', category: 'Gambling', cost: 15,
+            desc: 'Fires in a completely random direction. Cheap but unreliable.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(350), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(350), v('t')))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Double or Nothing', category: 'Gambling', cost: 40,
+            desc: 'Two waves: one real, one fake. Which hits? Luck decides.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', fn('floor', op('*', v('rand'), n(2))), n(0.5)), n(0.8)))),
+                op('*', n(300), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', fn('floor', op('*', v('rand'), n(2))), n(0.5)), n(0.8)))),
+                op('*', n(300), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: op('+', n(2), op('*', fn('floor', op('*', v('rand'), n(2))), n(5))),
+        },
+        {
+            name: 'Lucky Seven', category: 'Gambling', cost: 45,
+            desc: 'Seven arcon streams — most miss, but lucky ones home in.',
+            x: op('+',
+                fn('lerp', v('player.x'), op('+', v('enemy.x'), op('*', n(40), fn('sin', op('*', v('i'), n(7))))),
+                    fn('min', n(1), op('*', v('t'), op('+', n(0.3), op('*', v('rand'), n(0.7)))))),
+                op('*', fn('cos', op('*', v('i'), n(0.9))), op('*', n(30), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.7))))))),
+            y: op('+',
+                fn('lerp', v('player.y'), op('+', v('enemy.y'), op('*', n(40), fn('cos', op('*', v('i'), n(7))))),
+                    fn('min', n(1), op('*', v('t'), op('+', n(0.3), op('*', v('rand'), n(0.7)))))),
+                op('*', fn('sin', op('*', v('i'), n(0.9))), op('*', n(30), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.7))))))),
+            emit: op('*', v('i'), n(0.02)),
             width: n(4),
         },
     ];

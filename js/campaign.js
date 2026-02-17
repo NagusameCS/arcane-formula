@@ -77,9 +77,10 @@ const Campaign = (() => {
     let showingLevelUp = false;
     let levelUpQueue = 0; // Pending level-ups to show
 
-    // Co-op voting system
-    let coopVotes = {}; // { peerId: skillKey }
-    let myVote = null;
+    // Co-op voting system (3 votes per player, overlap-based resolution)
+    let coopVotes = {}; // { peerId: [skill1, skill2, skill3] }
+    let myVotes = [];   // array of up to 3 skill keys
+    const MAX_VOTES = 3;
     let voteTimeout = null;
     let isCoopMode = false; // Set to true when allies exist
 
@@ -136,7 +137,7 @@ const Campaign = (() => {
     function getSpeed() { return BASE_SPEED + skills.swiftness * 20; }
     function getDmg() { return BASE_DMG + skills.damage * 0.4; }
     function getDashCooldown() { return Math.max(0.1, BASE_DASH_COOLDOWN - skills.dash * 0.05); }
-    function getMeleeDmg() { return Math.floor(8 + skills.damage * 4 + playerLevel * 2); }
+    function getMeleeDmg() { return Math.floor(4 + skills.damage * 1.5 + playerLevel * 0.8); }
 
     // Screen effects
     let screenShake = { x: 0, y: 0 };
@@ -471,6 +472,76 @@ const Campaign = (() => {
             }
             Dungeon.preRender(currentDungeon);
         }
+        // Spike traps (don't disappear, do less damage but repeatable)
+        if (tile === Dungeon.TILE.SPIKE_TRAP) {
+            if (player.invulnTimer <= 0 && !player.dashing) {
+                player.hp -= 8;
+                player.hitFlash = 0.2;
+                player.invulnTimer = 0.5; // Brief invuln to prevent rapid hits
+                screenShake = { x: 2, y: 2 };
+                if (typeof Audio !== 'undefined') Audio.trap();
+            }
+        }
+        // Cracked floor (collapses after stepping on it)
+        if (tile === Dungeon.TILE.CRACKED_FLOOR) {
+            // Mark for delayed collapse
+            if (!player._crackedTimer) player._crackedTimer = {};
+            const key = ptx + ',' + pty;
+            if (!player._crackedTimer[key]) {
+                player._crackedTimer[key] = 0.5; // Collapse after 0.5s
+            }
+        }
+        // Update cracked floor timers
+        if (player._crackedTimer) {
+            for (const [key, timer] of Object.entries(player._crackedTimer)) {
+                player._crackedTimer[key] -= dt;
+                if (player._crackedTimer[key] <= 0) {
+                    const [cx, cy] = key.split(',').map(Number);
+                    if (currentDungeon.map[cy] && currentDungeon.map[cy][cx] === Dungeon.TILE.CRACKED_FLOOR) {
+                        currentDungeon.map[cy][cx] = Dungeon.TILE.VOID;
+                        Dungeon.preRender(currentDungeon);
+                    }
+                    delete player._crackedTimer[key];
+                }
+            }
+        }
+        // Rune tiles
+        if (tile === Dungeon.TILE.RUNE_TILE) {
+            Dungeon.activateRune(currentDungeon, ptx, pty);
+            flashAlpha = 0.15;
+            if (typeof Audio !== 'undefined') Audio.chest();
+        }
+        // Pressure plates
+        if (tile === Dungeon.TILE.PRESSURE_PLATE) {
+            const success = Dungeon.stepOnPlate(currentDungeon, ptx, pty);
+            if (success) {
+                flashAlpha = 0.15;
+                if (typeof Audio !== 'undefined') Audio.chest();
+            } else {
+                // Wrong order feedback
+                screenShake = { x: 3, y: 3 };
+            }
+        }
+        // Portal teleportation
+        if (tile === Dungeon.TILE.PORTAL_A || tile === Dungeon.TILE.PORTAL_B) {
+            if (!player._portalCooldown || player._portalCooldown <= 0) {
+                const dest = Dungeon.checkPortal(currentDungeon, player.x, player.y);
+                if (dest) {
+                    player.x = dest.x;
+                    player.y = dest.y;
+                    player._portalCooldown = 1.0; // Prevent instant re-teleport
+                    flashAlpha = 0.5;
+                    screenShake = { x: 6, y: 6 };
+                    if (typeof Audio !== 'undefined') Audio.stairsDown();
+                    // Snap camera to new position
+                    Dungeon.updateCamera(
+                        player.x / Dungeon.TILE_SIZE, player.y / Dungeon.TILE_SIZE,
+                        960, 540, currentDungeon
+                    );
+                }
+            }
+        }
+        if (player._portalCooldown > 0) player._portalCooldown -= dt;
         if (tile === Dungeon.TILE.STAIRS_DOWN && floorCleared) {
             if (typeof Audio !== 'undefined') Audio.stairsDown();
             saveCheckpoint(); // Checkpoint before next floor
@@ -827,8 +898,8 @@ const Campaign = (() => {
                 break;
             }
             case 'campaign-vote': {
-                // Ally voted for a skill
-                coopVotes[pid] = data.skill;
+                // Ally voted for skills (array of up to 3)
+                coopVotes[pid] = data.skills || [data.skill]; // backwards compat
                 updateVoteDisplay();
                 checkVoteConsensus();
                 break;
@@ -1068,7 +1139,7 @@ const Campaign = (() => {
     function showLevelUpUI() {
         isCoopMode = Network.isConnected() && allies.length > 0;
         coopVotes = {};
-        myVote = null;
+        myVotes = [];
 
         // Create overlay
         let overlay = document.getElementById('levelup-overlay');
@@ -1095,18 +1166,24 @@ const Campaign = (() => {
         const voteStatus = document.getElementById('vote-status');
         if (isCoopMode) {
             voteStatus.style.display = 'block';
-            voteStatus.textContent = 'Co-op: Vote on stat upgrade! Majority wins.';
+            voteStatus.textContent = 'Co-op: Pick up to 3 stats! Overlapping choices win.';
         } else {
             voteStatus.style.display = 'none';
         }
         rebuildSkillButtons();
 
         document.getElementById('levelup-done').onclick = () => {
-            if (isCoopMode && !myVote) return; // Must vote in co-op
+            if (isCoopMode && myVotes.length === 0) return; // Must vote in co-op
+            if (isCoopMode) {
+                // Send votes and check consensus
+                Network.send({ type: 'campaign-vote', skills: myVotes });
+                checkVoteConsensus();
+                return;
+            }
             levelUpQueue--;
             if (levelUpQueue > 0) {
                 coopVotes = {};
-                myVote = null;
+                myVotes = [];
                 rebuildSkillButtons();
             } else {
                 overlay.classList.add('hidden');
@@ -1118,12 +1195,14 @@ const Campaign = (() => {
         if (isCoopMode) {
             if (voteTimeout) clearTimeout(voteTimeout);
             voteTimeout = setTimeout(() => {
-                if (showingLevelUp && !myVote) {
-                    // Auto-vote random
+                if (showingLevelUp && myVotes.length === 0) {
+                    // Auto-vote 3 random (no duplicates)
                     const keys = Object.keys(skills);
-                    myVote = keys[Math.floor(Math.random() * keys.length)];
-                    coopVotes['self'] = myVote;
-                    Network.send({ type: 'campaign-vote', skill: myVote });
+                    while (myVotes.length < MAX_VOTES && myVotes.length < keys.length) {
+                        const pick = keys[Math.floor(Math.random() * keys.length)];
+                        if (!myVotes.includes(pick)) myVotes.push(pick);
+                    }
+                    Network.send({ type: 'campaign-vote', skills: myVotes });
                     checkVoteConsensus();
                 }
             }, 15000);
@@ -1134,51 +1213,93 @@ const Campaign = (() => {
         const voteStatus = document.getElementById('vote-status');
         if (!voteStatus || !isCoopMode) return;
         const totalPlayers = allies.length + 1;
-        const totalVotes = Object.keys(coopVotes).length + (myVote ? 1 : 0);
+        const submitted = Object.keys(coopVotes).length + (myVotes.length > 0 ? 1 : 0);
+        // Count how many players picked each skill
         const voteCounts = {};
-        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
-        for (const v of Object.values(coopVotes)) {
-            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        for (const sk of myVotes) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
+        for (const arr of Object.values(coopVotes)) {
+            for (const sk of arr) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
         }
         const voteStrs = Object.entries(voteCounts).map(([k, v]) => k.toUpperCase() + ':' + v).join(' ');
-        voteStatus.textContent = `Votes (${totalVotes}/${totalPlayers}): ${voteStrs || 'none yet'}`;
+        voteStatus.textContent = `Players voted: ${submitted}/${totalPlayers} | ${voteStrs || 'none yet'}`;
         rebuildSkillButtons();
     }
 
     function checkVoteConsensus() {
         if (!isCoopMode) return;
         const totalPlayers = allies.length + 1;
-        const totalVotes = Object.keys(coopVotes).length + (myVote ? 1 : 0);
-        if (totalVotes < totalPlayers) return; // Wait for all
-
-        // Count votes
-        const voteCounts = {};
-        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
-        for (const v of Object.values(coopVotes)) {
-            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        const submitted = Object.keys(coopVotes).length + (myVotes.length > 0 ? 1 : 0);
+        if (submitted < totalPlayers) {
+            updateVoteDisplay();
+            return; // Wait for all players
         }
 
-        // Find winner (highest votes, tie = random among tied)
-        let maxVotes = 0;
-        for (const v of Object.values(voteCounts)) { if (v > maxVotes) maxVotes = v; }
-        const winners = Object.entries(voteCounts).filter(([, v]) => v === maxVotes).map(([k]) => k);
-        const winner = winners[Math.floor(Math.random() * winners.length)];
+        // Gather all vote arrays
+        const allVoteSets = [myVotes];
+        for (const arr of Object.values(coopVotes)) allVoteSets.push(arr);
+
+        // Find overlaps: skills that appear in BOTH players' lists
+        // For >2 players, find skills in the most lists
+        const skillPlayerCount = {};
+        for (const voteSet of allVoteSets) {
+            const unique = [...new Set(voteSet)];
+            for (const sk of unique) {
+                skillPlayerCount[sk] = (skillPlayerCount[sk] || 0) + 1;
+            }
+        }
+
+        // Find the max overlap count
+        let maxOverlap = 0;
+        for (const v of Object.values(skillPlayerCount)) {
+            if (v > maxOverlap) maxOverlap = v;
+        }
+
+        let winner;
+        if (maxOverlap >= 2) {
+            // At least 2 players agree on something — pick the FIRST overlap
+            // "First" = earliest in the ordering of myVotes (local player priority)
+            const overlapping = Object.entries(skillPlayerCount)
+                .filter(([, cnt]) => cnt === maxOverlap)
+                .map(([k]) => k);
+            // Prioritize by vote order: check myVotes first, then ally votes
+            winner = null;
+            for (const sk of myVotes) {
+                if (overlapping.includes(sk)) { winner = sk; break; }
+            }
+            if (!winner) {
+                for (const arr of Object.values(coopVotes)) {
+                    for (const sk of arr) {
+                        if (overlapping.includes(sk)) { winner = sk; break; }
+                    }
+                    if (winner) break;
+                }
+            }
+            if (!winner) winner = overlapping[0]; // fallback
+        } else {
+            // No overlaps — pick randomly from all voted skills
+            const allSkills = [];
+            for (const voteSet of allVoteSets) allSkills.push(...voteSet);
+            winner = allSkills[Math.floor(Math.random() * allSkills.length)];
+        }
 
         // Apply the voted skill
         spendSkillPoint(winner);
 
         const voteStatus = document.getElementById('vote-status');
-        if (voteStatus) voteStatus.textContent = `Vote result: ${winner.toUpperCase()} wins!`;
+        if (voteStatus) {
+            const method = maxOverlap >= 2 ? 'overlap' : 'random (no overlap)';
+            voteStatus.textContent = `Result: ${winner.toUpperCase()} wins! (${method})`;
+        }
 
         // Auto-continue after 1.5s
         setTimeout(() => {
             levelUpQueue--;
             if (levelUpQueue > 0) {
                 coopVotes = {};
-                myVote = null;
+                myVotes = [];
                 rebuildSkillButtons();
                 if (document.getElementById('vote-status')) {
-                    document.getElementById('vote-status').textContent = 'Co-op: Vote on stat upgrade!';
+                    document.getElementById('vote-status').textContent = 'Co-op: Pick up to 3 stats!';
                 }
             } else {
                 const overlay = document.getElementById('levelup-overlay');
@@ -1200,36 +1321,44 @@ const Campaign = (() => {
             { key: 'dash', name: 'DASH', desc: '-0.05s dash cooldown', cur: skills.dash, color: '#aa88ff' },
         ];
 
-        // Count votes for display
+        // Count votes per skill for display
         const voteCounts = {};
-        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
-        for (const v of Object.values(coopVotes)) {
-            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        for (const sk of myVotes) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
+        for (const arr of Object.values(coopVotes)) {
+            for (const sk of arr) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
         }
+
+        const votesLocked = myVotes.length >= MAX_VOTES; // Already submitted max votes
 
         for (const s of skillData) {
             const btn = document.createElement('button');
             btn.className = 'levelup-skill-btn';
-            btn.style.borderColor = s.color;
+            const isMyPick = myVotes.includes(s.key);
+            btn.style.borderColor = isMyPick ? '#fff' : s.color;
+            if (isMyPick) btn.style.boxShadow = '0 0 8px ' + s.color;
             const voteIndicator = isCoopMode && voteCounts[s.key] ? ` [${voteCounts[s.key]} vote${voteCounts[s.key] > 1 ? 's' : ''}]` : '';
-            const myVoteMarker = myVote === s.key ? ' ★' : '';
+            const myVoteMarker = isMyPick ? ` ★${myVotes.indexOf(s.key) + 1}` : '';
+            const votesLeftTxt = isCoopMode && !votesLocked ? ` (${MAX_VOTES - myVotes.length} left)` : '';
             btn.innerHTML = `
                 <span class="skill-name" style="color:${s.color}">${s.name}${myVoteMarker}</span>
                 <span class="skill-pips">${'|'.repeat(s.cur)}${s.cur > 0 ? '' : '-'}${voteIndicator}</span>
                 <span class="skill-desc">${s.desc}</span>
             `;
             if (isCoopMode) {
-                // Co-op mode: clicking is a vote, not a direct spend
-                if (!myVote) {
-                    btn.onclick = () => {
-                        myVote = s.key;
-                        Network.send({ type: 'campaign-vote', skill: s.key });
-                        updateVoteDisplay();
-                        checkVoteConsensus();
-                    };
-                } else {
-                    btn.disabled = true;
-                    btn.style.opacity = myVote === s.key ? '1' : '0.4';
+                // Co-op mode: clicking toggles vote (up to 3, no dupes)
+                btn.onclick = () => {
+                    if (isMyPick) {
+                        // Un-vote (toggle off)
+                        myVotes = myVotes.filter(v => v !== s.key);
+                    } else if (myVotes.length < MAX_VOTES) {
+                        // Add vote
+                        myVotes.push(s.key);
+                    }
+                    updateVoteDisplay();
+                    rebuildSkillButtons();
+                };
+                if (!isMyPick && votesLocked) {
+                    btn.style.opacity = '0.4';
                 }
             } else {
                 // Solo mode: direct spend

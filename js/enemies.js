@@ -479,7 +479,8 @@ const Enemies = (() => {
         const lib = SpellLibrary.getAll();
         // Pick a variety of spells for bosses to use
         const spellNames = ['Bolt', 'Spray', 'Wave', 'Spiral', 'Seeker', 'Shield', 'Burst', 'Vortex',
-                            'Nova', 'Swarm', 'Flak', 'Icicle', 'Railgun', 'Repulse', 'Tesla', 'Supernova'];
+                            'Nova', 'Swarm', 'Flak', 'Icicle', 'Railgun', 'Repulse', 'Tesla', 'Supernova',
+                            'Cross', 'Gatling', 'Meteor', 'Buzzsaw', 'Helix', 'Lemniscate'];
         for (const name of spellNames) {
             const found = lib.find(s => s.name === name);
             if (found) {
@@ -535,10 +536,18 @@ const Enemies = (() => {
         if (e.phase !== oldPhase) {
             addShake(8, 0.4);
             if (typeof Audio !== 'undefined') Audio.bossRoar();
-            // Show taunt on phase change
             if (typeof Cutscene !== 'undefined') {
                 const taunt = Cutscene.getBossTaunt(e.name);
                 if (taunt) Cutscene.showTaunt(taunt, e.x, e.y - e.size - 20, e.color);
+            }
+            // Phase transition burst (visual flair)
+            for (let a = 0; a < 16; a++) {
+                const angle = (a / 16) * Math.PI * 2;
+                effects.push({
+                    type: 'projectile', x: e.x, y: e.y,
+                    vx: Math.cos(angle) * 80, vy: Math.sin(angle) * 80,
+                    dmg: 0, life: 0.5, color: e.color, size: 3, owner: 'none',
+                });
             }
         }
 
@@ -553,26 +562,39 @@ const Enemies = (() => {
         }
 
         e.aiTimer -= dt;
+        if (!e._chargeState) e._chargeState = 'none';
+        if (!e._laserAngle) e._laserAngle = 0;
+        if (!e._specialCooldown) e._specialCooldown = 0;
+        e._specialCooldown -= dt;
+
+        // ── Boss-specific signature attacks ──
+        const bossSignature = getBossSignature(e, target, dt, dungeon);
 
         if (e.phase === 1) {
             moveEnemy(e, ndx, ndy, dt, dungeon);
-            // Phase 1: Occasional spell cast
-            if (e.aiTimer <= 0 && closestDist < 250) {
-                e.aiTimer = 2.0 + Math.random();
+            if (e.aiTimer <= 0 && closestDist < 300) {
+                e.aiTimer = 1.8 + Math.random();
                 const p1Spells = ['Bolt', 'Spray', 'Seeker'];
                 bossCastSpell(e, target, p1Spells[Math.floor(Math.random() * p1Spells.length)]);
             }
         } else if (e.phase === 2) {
             moveEnemy(e, ndx * 1.5, ndy * 1.5, dt, dungeon);
             if (e.aiTimer <= 0) {
-                e.aiTimer = 1.0 + Math.random() * 0.5;
-                // Phase 2: Stronger spells + projectile ring
-                if (Math.random() < 0.4) {
+                e.aiTimer = 0.8 + Math.random() * 0.5;
+                const roll = Math.random();
+                if (roll < 0.25 && e._specialCooldown <= 0) {
+                    // Signature attack
+                    bossSignature();
+                    e._specialCooldown = 4;
+                } else if (roll < 0.55) {
                     const p2Spells = ['Wave', 'Spiral', 'Flak', 'Tesla'];
                     bossCastSpell(e, target, p2Spells[Math.floor(Math.random() * p2Spells.length)]);
                 } else {
-                    for (let a = 0; a < 8; a++) {
-                        const angle = (a / 8) * Math.PI * 2;
+                    // Projectile ring
+                    const ringCount = 8 + e.phase * 2;
+                    const baseAngle = Math.random() * Math.PI * 2;
+                    for (let a = 0; a < ringCount; a++) {
+                        const angle = baseAngle + (a / ringCount) * Math.PI * 2;
                         effects.push({
                             type: 'projectile', x: e.x, y: e.y,
                             vx: Math.cos(angle) * 120, vy: Math.sin(angle) * 120,
@@ -586,13 +608,15 @@ const Enemies = (() => {
         } else if (e.phase === 3) {
             moveEnemy(e, ndx * 2, ndy * 2, dt, dungeon);
             if (e.aiTimer <= 0) {
-                e.aiTimer = 0.5 + Math.random() * 0.3;
-                // Phase 3: Powerful spells, dense projectiles, teleport
+                e.aiTimer = 0.4 + Math.random() * 0.3;
                 const roll = Math.random();
-                if (roll < 0.3) {
+                if (roll < 0.2 && e._specialCooldown <= 0) {
+                    bossSignature();
+                    e._specialCooldown = 3;
+                } else if (roll < 0.4) {
                     const p3Spells = ['Nova', 'Supernova', 'Vortex', 'Repulse', 'Railgun'];
                     bossCastSpell(e, target, p3Spells[Math.floor(Math.random() * p3Spells.length)]);
-                } else if (roll < 0.5) {
+                } else if (roll < 0.55) {
                     // Teleport near player
                     const teleAngle = Math.random() * Math.PI * 2;
                     const tx = target.x + Math.cos(teleAngle) * 80;
@@ -600,15 +624,41 @@ const Enemies = (() => {
                     if (Dungeon.isWalkable(dungeon, tx, ty)) {
                         e.x = tx; e.y = ty;
                         addShake(5, 0.2);
+                        // Slam after teleport
+                        for (let a = 0; a < 6; a++) {
+                            const ang = (a / 6) * Math.PI * 2;
+                            effects.push({
+                                type: 'projectile', x: e.x, y: e.y,
+                                vx: Math.cos(ang) * 100, vy: Math.sin(ang) * 100,
+                                dmg: Math.ceil(e.dmg * 0.3), life: 1.5,
+                                color: e.color, size: 4, owner: 'enemy',
+                            });
+                        }
+                    }
+                } else if (roll < 0.7) {
+                    // Spiral barrage
+                    const baseAngle = performance.now() * 0.003;
+                    for (let w = 0; w < 3; w++) {
+                        for (let a = 0; a < 6; a++) {
+                            const angle = baseAngle + (a / 6) * Math.PI * 2 + w * 0.3;
+                            effects.push({
+                                type: 'projectile', x: e.x, y: e.y,
+                                vx: Math.cos(angle) * (100 + w * 40),
+                                vy: Math.sin(angle) * (100 + w * 40),
+                                dmg: Math.ceil(e.dmg * 0.25), life: 2.5,
+                                color: e.color, size: 4, owner: 'enemy',
+                            });
+                        }
                     }
                 } else {
+                    // Dense ring
                     const baseAngle = performance.now() * 0.002;
-                    for (let a = 0; a < 12; a++) {
-                        const angle = (a / 12) * Math.PI * 2 + baseAngle;
+                    for (let a = 0; a < 16; a++) {
+                        const angle = (a / 16) * Math.PI * 2 + baseAngle;
                         effects.push({
                             type: 'projectile', x: e.x, y: e.y,
                             vx: Math.cos(angle) * 160, vy: Math.sin(angle) * 160,
-                            dmg: Math.ceil(e.dmg * 0.4), life: 2,
+                            dmg: Math.ceil(e.dmg * 0.35), life: 2,
                             color: e.color, size: 4, owner: 'enemy',
                         });
                     }
@@ -621,25 +671,237 @@ const Enemies = (() => {
         if (e.phase >= 4) {
             moveEnemy(e, ndx * 2.5, ndy * 2.5, dt, dungeon);
             if (e.aiTimer <= 0) {
-                e.aiTimer = 0.3 + Math.random() * 0.2;
-                // Absolute chaos: multiple spells + summons
-                const chaoSpells = ['Swarm', 'Supernova', 'Tesla', 'Nova', 'Spiral'];
-                bossCastSpell(e, target, chaoSpells[Math.floor(Math.random() * chaoSpells.length)]);
-                // Summon minions occasionally
-                if (Math.random() < 0.15 && enemies.length < 20) {
-                    const sa = Math.random() * Math.PI * 2;
-                    const minion = createEnemy('skeleton', {
-                        ...TYPES.skeleton, hp: TYPES.skeleton.hp * 2,
-                    }, 0, 0, false);
-                    minion.x = e.x + Math.cos(sa) * 30;
-                    minion.y = e.y + Math.sin(sa) * 30;
-                    minion.spawnTimer = 0.2;
-                    minion.aggro = true;
-                    enemies.push(minion);
+                e.aiTimer = 0.25 + Math.random() * 0.15;
+                const roll = Math.random();
+                if (roll < 0.15 && e._specialCooldown <= 0) {
+                    bossSignature();
+                    e._specialCooldown = 2;
+                } else if (roll < 0.5) {
+                    const chaoSpells = ['Swarm', 'Supernova', 'Tesla', 'Nova', 'Spiral'];
+                    bossCastSpell(e, target, chaoSpells[Math.floor(Math.random() * chaoSpells.length)]);
+                } else if (roll < 0.65) {
+                    // Summon minions
+                    if (enemies.length < 20) {
+                        for (let s = 0; s < 2; s++) {
+                            const sa = Math.random() * Math.PI * 2;
+                            const minion = createEnemy('skeleton', {
+                                ...TYPES.skeleton, hp: TYPES.skeleton.hp * 2,
+                            }, 0, 0, false);
+                            minion.x = e.x + Math.cos(sa) * 40;
+                            minion.y = e.y + Math.sin(sa) * 40;
+                            minion.spawnTimer = 0.2;
+                            minion.aggro = true;
+                            enemies.push(minion);
+                        }
+                    }
+                } else {
+                    // Chaos spiral barrage
+                    for (let w = 0; w < 4; w++) {
+                        const baseAngle = performance.now() * 0.005 + w * Math.PI / 4;
+                        for (let a = 0; a < 4; a++) {
+                            const angle = baseAngle + (a / 4) * Math.PI * 2;
+                            effects.push({
+                                type: 'projectile', x: e.x, y: e.y,
+                                vx: Math.cos(angle) * (80 + w * 60),
+                                vy: Math.sin(angle) * (80 + w * 60),
+                                dmg: Math.ceil(e.dmg * 0.3), life: 3,
+                                color: e.color, size: 5, owner: 'enemy',
+                            });
+                        }
+                    }
                 }
                 addShake(6, 0.3);
             }
         }
+    }
+
+    // ── Boss-specific signature attacks ──
+    function getBossSignature(boss, target, dt, dungeon) {
+        const name = boss.name;
+        return () => {
+            const dx = target.x - boss.x, dy = target.y - boss.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const aimAngle = Math.atan2(dy, dx);
+
+            switch (name) {
+                case 'Pharaoh Khet': {
+                    // SANDSTORM SWEEP: Wide cone of projectiles sweeping left to right
+                    addShake(8, 0.5);
+                    for (let w = 0; w < 5; w++) {
+                        setTimeout(() => {
+                            const sweepAngle = aimAngle - 0.6 + (w / 4) * 1.2;
+                            for (let p = 0; p < 4; p++) {
+                                const a = sweepAngle + (p - 1.5) * 0.08;
+                                effects.push({
+                                    type: 'projectile', x: boss.x, y: boss.y,
+                                    vx: Math.cos(a) * 200, vy: Math.sin(a) * 200,
+                                    dmg: Math.ceil(boss.dmg * 0.4), life: 2,
+                                    color: '#c4a35a', size: 6, owner: 'enemy',
+                                });
+                            }
+                        }, w * 120);
+                    }
+                    break;
+                }
+                case 'Lord Thanatos': {
+                    // DEATH CHARGE: Rush toward player with trail of fire
+                    boss._chargeState = 'charging';
+                    const chargeAngle = aimAngle;
+                    const speed = 300;
+                    let chargeTime = 0;
+                    const chargeInterval = setInterval(() => {
+                        chargeTime += 0.03;
+                        if (chargeTime > 0.8 || boss._chargeState !== 'charging') {
+                            clearInterval(chargeInterval);
+                            boss._chargeState = 'none';
+                            // Explosion at end
+                            for (let a = 0; a < 12; a++) {
+                                const ang = (a / 12) * Math.PI * 2;
+                                effects.push({
+                                    type: 'projectile', x: boss.x, y: boss.y,
+                                    vx: Math.cos(ang) * 140, vy: Math.sin(ang) * 140,
+                                    dmg: Math.ceil(boss.dmg * 0.5), life: 1.5,
+                                    color: '#ff4500', size: 5, owner: 'enemy',
+                                });
+                            }
+                            addShake(10, 0.3);
+                            return;
+                        }
+                        const mx = boss.x + Math.cos(chargeAngle) * speed * 0.03;
+                        const my = boss.y + Math.sin(chargeAngle) * speed * 0.03;
+                        if (Dungeon.isWalkable(dungeon, mx, my)) {
+                            boss.x = mx; boss.y = my;
+                        }
+                        // Fire trail
+                        effects.push({
+                            type: 'projectile', x: boss.x, y: boss.y,
+                            vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30,
+                            dmg: Math.ceil(boss.dmg * 0.2), life: 1.5,
+                            color: '#ff6600', size: 4, owner: 'enemy',
+                        });
+                    }, 30);
+                    addShake(6, 0.8);
+                    break;
+                }
+                case 'Elder Thornback': {
+                    // VINE ERUPTION: Line of projectiles that erupt from the ground toward player
+                    addShake(6, 0.4);
+                    for (let s = 1; s <= 8; s++) {
+                        setTimeout(() => {
+                            const spawnX = boss.x + (dx / dist) * s * 25;
+                            const spawnY = boss.y + (dy / dist) * s * 25;
+                            // Eruption burst at each point
+                            for (let a = 0; a < 4; a++) {
+                                const ang = (a / 4) * Math.PI * 2;
+                                effects.push({
+                                    type: 'projectile', x: spawnX, y: spawnY,
+                                    vx: Math.cos(ang) * 60, vy: Math.sin(ang) * 60,
+                                    dmg: Math.ceil(boss.dmg * 0.3), life: 1.5,
+                                    color: '#228b22', size: 5, owner: 'enemy',
+                                });
+                            }
+                        }, s * 100);
+                    }
+                    break;
+                }
+                case 'Archon Solaris': {
+                    // LASER SWEEP: Rotating beam of dense projectiles
+                    addShake(5, 1.0);
+                    let sweepAngle = aimAngle - Math.PI / 3;
+                    let sweepTicks = 0;
+                    const sweepInterval = setInterval(() => {
+                        sweepTicks++;
+                        sweepAngle += 0.08;
+                        if (sweepTicks > 25) { clearInterval(sweepInterval); return; }
+                        for (let d = 30; d < 200; d += 25) {
+                            effects.push({
+                                type: 'projectile',
+                                x: boss.x + Math.cos(sweepAngle) * d,
+                                y: boss.y + Math.sin(sweepAngle) * d,
+                                vx: Math.cos(sweepAngle) * 50, vy: Math.sin(sweepAngle) * 50,
+                                dmg: Math.ceil(boss.dmg * 0.2), life: 0.4,
+                                color: '#ffffff', size: 3, owner: 'enemy',
+                            });
+                        }
+                    }, 40);
+                    break;
+                }
+                case 'Core Override': {
+                    // GRID LOCK: Cross-shaped laser grid that expands
+                    addShake(6, 0.5);
+                    for (let d = 0; d < 4; d++) {
+                        const baseAng = d * Math.PI / 2 + performance.now() * 0.001;
+                        for (let s = 1; s <= 6; s++) {
+                            setTimeout(() => {
+                                effects.push({
+                                    type: 'projectile',
+                                    x: boss.x + Math.cos(baseAng) * s * 30,
+                                    y: boss.y + Math.sin(baseAng) * s * 30,
+                                    vx: Math.cos(baseAng) * 180, vy: Math.sin(baseAng) * 180,
+                                    dmg: Math.ceil(boss.dmg * 0.35), life: 1.5,
+                                    color: '#00ffff', size: 4, owner: 'enemy',
+                                });
+                            }, s * 60);
+                        }
+                    }
+                    break;
+                }
+                case 'Lich King Morthul': {
+                    // DEATH NOVA + SUMMON: Massive expanding ring + skeleton wave
+                    addShake(10, 0.6);
+                    // Giant ring
+                    for (let a = 0; a < 24; a++) {
+                        const ang = (a / 24) * Math.PI * 2;
+                        effects.push({
+                            type: 'projectile', x: boss.x, y: boss.y,
+                            vx: Math.cos(ang) * 100, vy: Math.sin(ang) * 100,
+                            dmg: Math.ceil(boss.dmg * 0.4), life: 3,
+                            color: '#9b59b6', size: 6, owner: 'enemy',
+                        });
+                    }
+                    // Summon ring of skeletons
+                    if (enemies.length < 25) {
+                        for (let s = 0; s < 4; s++) {
+                            const sa = (s / 4) * Math.PI * 2;
+                            const minion = createEnemy('skeleton', {
+                                ...TYPES.skeleton, hp: TYPES.skeleton.hp * 3,
+                            }, 0, 0, false);
+                            minion.x = boss.x + Math.cos(sa) * 60;
+                            minion.y = boss.y + Math.sin(sa) * 60;
+                            minion.spawnTimer = 0.3;
+                            minion.aggro = true;
+                            enemies.push(minion);
+                        }
+                    }
+                    // Delayed inner ring
+                    setTimeout(() => {
+                        for (let a = 0; a < 16; a++) {
+                            const ang = (a / 16) * Math.PI * 2 + 0.2;
+                            effects.push({
+                                type: 'projectile', x: boss.x, y: boss.y,
+                                vx: Math.cos(ang) * 180, vy: Math.sin(ang) * 180,
+                                dmg: Math.ceil(boss.dmg * 0.35), life: 2,
+                                color: '#d8bfd8', size: 5, owner: 'enemy',
+                            });
+                        }
+                    }, 500);
+                    break;
+                }
+                default: {
+                    // Generic fallback: concentrated burst
+                    for (let a = 0; a < 12; a++) {
+                        const ang = aimAngle + (a - 5.5) * 0.1;
+                        effects.push({
+                            type: 'projectile', x: boss.x, y: boss.y,
+                            vx: Math.cos(ang) * 200, vy: Math.sin(ang) * 200,
+                            dmg: Math.ceil(boss.dmg * 0.3), life: 2,
+                            color: boss.color, size: 4, owner: 'enemy',
+                        });
+                    }
+                    break;
+                }
+            }
+        };
     }
 
     function moveEnemy(e, dirX, dirY, dt, dungeon) {
