@@ -15,9 +15,9 @@ const Network = (() => {
 
     const PREFIX = 'arcform-';
 
-    // ── ICE SERVER GATHERING ──
-    // We fetch temporary TURN credentials from Cloudflare (free, 1TB/month)
-    // at runtime, plus use freestun.net as static fallback.
+    // ── ICE SERVER CONFIG ──
+    // Cloudflare TURN creds are fetched at runtime via CORS proxies.
+    // Multiple fallback TURN servers with static creds are also included.
 
     const STUN_SERVERS = [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -26,22 +26,72 @@ const Network = (() => {
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:stun.cloudflare.com:3478' },
-        { urls: 'stun:freestun.net:3478' },
     ];
 
     const STATIC_TURN = [
-        // freestun.net — free public TURN
+        // freestun.net — free public TURN (UDP + TCP)
         { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' },
-        // Old open relay (may or may not still work)
+        { urls: 'turn:freestun.net:3478?transport=tcp', username: 'free', credential: 'free' },
+        // Open Relay Project (Metered) — may or may not still work
         { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
     ];
 
-    // Cache fetched credentials
+    // Cache fetched ICE config
     let cachedICE = null;
     let cacheTime = 0;
-    const CACHE_TTL = 3600000; // 1 hour
+    const CACHE_TTL = 1800000; // 30 min (Cloudflare creds rotate)
+
+    // Fetch Cloudflare TURN creds through multiple CORS proxy fallbacks
+    async function fetchCloudflareTURN() {
+        const cfURL = 'https://speed.cloudflare.com/turn-creds';
+        const proxies = [
+            (u) => 'https://corsproxy.io/?' + encodeURIComponent(u),
+            (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+            (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+        ];
+
+        // First try direct (works if same-origin or CORS is added later)
+        try {
+            const r = await fetchWithTimeout(cfURL, 4000);
+            if (r.ok) {
+                const data = await r.json();
+                if (data && data.urls) return data;
+            }
+        } catch(e) { /* CORS blocked, expected */ }
+
+        // Try each CORS proxy
+        for (const makeURL of proxies) {
+            try {
+                const url = makeURL(cfURL);
+                log('Trying TURN via proxy: ' + url.substring(0, 50) + '...');
+                const r = await fetchWithTimeout(url, 5000);
+                if (!r.ok) continue;
+                const text = await r.text();
+                // Some proxies wrap in JSON, try to extract
+                let data;
+                try { data = JSON.parse(text); } catch(e) { continue; }
+                // allorigins wraps in {contents: "..."}, handle that
+                if (data.contents) {
+                    try { data = JSON.parse(data.contents); } catch(e) { continue; }
+                }
+                if (data && data.urls && data.username) {
+                    log('Got Cloudflare TURN creds via proxy');
+                    return data;
+                }
+            } catch(e) {
+                log('Proxy failed: ' + e.message);
+            }
+        }
+        return null;
+    }
+
+    function fetchWithTimeout(url, ms) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    }
 
     async function getICEConfig() {
         if (cachedICE && Date.now() - cacheTime < CACHE_TTL) {
@@ -49,37 +99,39 @@ const Network = (() => {
         }
 
         let cloudflareServers = [];
-
         try {
             log('Fetching Cloudflare TURN credentials...');
-            const resp = await fetch('https://speed.cloudflare.com/turn-creds');
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const creds = await resp.json();
-            // creds = { urls: [...], username: "...", credential: "..." }
+            const creds = await fetchCloudflareTURN();
             if (creds && creds.urls && creds.username) {
-                // Split into individual iceServer entries
                 const urls = Array.isArray(creds.urls) ? creds.urls : [creds.urls];
                 cloudflareServers = [{
                     urls: urls,
                     username: creds.username,
                     credential: creds.credential,
                 }];
-                log('Got Cloudflare TURN: ' + urls.length + ' URLs');
+                log('Cloudflare TURN ready: ' + urls.join(', '));
+            } else {
+                log('Cloudflare TURN: no valid creds returned');
             }
         } catch (e) {
             log('Cloudflare TURN fetch failed: ' + e.message);
         }
 
-        cachedICE = {
-            iceServers: [
-                ...STUN_SERVERS,
-                ...cloudflareServers,
-                ...STATIC_TURN,
-            ]
-        };
+        const allServers = [
+            ...STUN_SERVERS,
+            ...cloudflareServers,
+            ...STATIC_TURN,
+        ];
+
+        cachedICE = { iceServers: allServers };
         cacheTime = Date.now();
 
-        log('ICE config ready: ' + cachedICE.iceServers.length + ' servers (' + cloudflareServers.length + ' Cloudflare TURN)');
+        const turnCount = cloudflareServers.length > 0
+            ? cloudflareServers[0].urls.length
+            : 0;
+        log('ICE config: ' + allServers.length + ' entries, '
+            + turnCount + ' Cloudflare TURN, '
+            + STATIC_TURN.length + ' static TURN');
         return cachedICE;
     }
 
@@ -96,10 +148,7 @@ const Network = (() => {
 
     async function makePeer(id) {
         const iceConfig = await getICEConfig();
-        const opts = {
-            debug: 1,
-            config: iceConfig,
-        };
+        const opts = { debug: 1, config: iceConfig };
         return id ? new Peer(id, opts) : new Peer(opts);
     }
 
@@ -114,8 +163,20 @@ const Network = (() => {
         pc.addEventListener('iceconnectionstatechange', () => {
             log(label + ' ICE: ' + pc.iceConnectionState);
         });
+        pc.addEventListener('icegatheringstatechange', () => {
+            log(label + ' gathering: ' + pc.iceGatheringState);
+        });
         pc.addEventListener('connectionstatechange', () => {
-            log(label + ' conn-state: ' + pc.connectionState);
+            log(label + ' state: ' + pc.connectionState);
+        });
+        // Log candidate types to diagnose STUN vs TURN vs relay
+        pc.addEventListener('icecandidate', (e) => {
+            if (e.candidate) {
+                const c = e.candidate;
+                log(label + ' candidate: ' + c.type + ' ' + (c.protocol||'') + ' ' + (c.relatedAddress||c.address||'') + ':' + (c.relatedPort||c.port||''));
+            } else {
+                log(label + ' ICE gathering complete');
+            }
         });
     }
 
@@ -145,7 +206,7 @@ const Network = (() => {
                     if (settled) return;
                     settled = true;
                     roomCode = code;
-                    log('Room created: ' + code + ', peer id: ' + id);
+                    log('Room created: ' + code);
                     resolve(code);
                 });
 
@@ -153,7 +214,7 @@ const Network = (() => {
                     log('Incoming connection from opponent');
                     conn = c;
 
-                    // Monitor ICE
+                    // Monitor ICE on the underlying RTCPeerConnection
                     setTimeout(() => {
                         if (conn && conn.peerConnection) monitorICE(conn.peerConnection, 'Host');
                     }, 200);
@@ -163,7 +224,7 @@ const Network = (() => {
                         setupConnection();
                     } else {
                         conn.on('open', () => {
-                            log('Host-side data channel opened');
+                            log('Host data channel opened');
                             setupConnection();
                         });
                     }
@@ -182,7 +243,7 @@ const Network = (() => {
                 });
 
                 peer.on('disconnected', () => {
-                    log('Peer disconnected from signaling, reconnecting...');
+                    log('Signaling disconnected, reconnecting...');
                     if (peer && !peer.destroyed) {
                         try { peer.reconnect(); } catch(e) {}
                     }
@@ -225,7 +286,6 @@ const Network = (() => {
                     log('My peer id: ' + myId + ', connecting to ' + PREFIX + roomCode);
                     conn = peer.connect(PREFIX + roomCode, { reliable: true, serialization: 'json' });
 
-                    // Monitor ICE
                     setTimeout(() => {
                         if (conn && conn.peerConnection) monitorICE(conn.peerConnection, 'Client');
                     }, 500);
@@ -242,7 +302,7 @@ const Network = (() => {
                         log('Connection error: ' + err);
                         if (!settled) {
                             settled = true;
-                            reject(new Error('Failed to connect to room. Is the code correct?'));
+                            reject(new Error('Failed to connect. Is the code correct?'));
                         }
                     });
                 });
@@ -252,7 +312,7 @@ const Network = (() => {
                     if (!settled) {
                         settled = true;
                         if (err.type === 'peer-unavailable') {
-                            reject(new Error('Room "' + roomCode + '" not found. Check the code and try again.'));
+                            reject(new Error('Room "' + roomCode + '" not found. Check the code.'));
                         } else {
                             reject(new Error(friendlyError(err)));
                         }
@@ -260,7 +320,7 @@ const Network = (() => {
                 });
 
                 peer.on('disconnected', () => {
-                    log('Peer disconnected from signaling');
+                    log('Signaling disconnected');
                     if (peer && !peer.destroyed) {
                         try { peer.reconnect(); } catch(e) {}
                     }
@@ -270,9 +330,9 @@ const Network = (() => {
                     if (!settled) {
                         settled = true;
                         cleanup();
-                        reject(new Error('Connection timed out. Try again — if it keeps failing, one of you may be behind a strict firewall.'));
+                        reject(new Error('Connection timed out. Try again — if it persists, a firewall may be blocking WebRTC.'));
                     }
-                }, 20000);
+                }, 25000);
             })();
         });
     }
@@ -305,19 +365,17 @@ const Network = (() => {
         }
     }
 
-    function disconnect() {
-        cleanup();
-    }
+    function disconnect() { cleanup(); }
 
     function friendlyError(err) {
         switch (err.type) {
             case 'browser-incompatible': return 'Your browser does not support WebRTC.';
             case 'disconnected': return 'Lost connection to signaling server.';
-            case 'network': return 'Network error. Check your internet connection.';
+            case 'network': return 'Network error. Check your internet.';
             case 'peer-unavailable': return 'Room not found.';
-            case 'server-error': return 'Signaling server error. Try again in a moment.';
+            case 'server-error': return 'Signaling server error. Try again.';
             case 'socket-error': return 'Socket error. Check your connection.';
-            case 'socket-closed': return 'Connection to server was closed.';
+            case 'socket-closed': return 'Connection to server closed.';
             case 'unavailable-id': return 'Room code collision. Try again.';
             case 'webrtc': return 'WebRTC error. Try a different browser.';
             default: return err.message || 'Unknown connection error.';
