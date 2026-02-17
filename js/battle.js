@@ -28,6 +28,7 @@ const Battle = (() => {
     let arenaParticles = [];
 
     function init(compiledSpells) {
+        ArconSystem.setBoundsMode('arena');
         const isHost = Network.isHost();
         player = {
             id: 'player', x: isHost ? 200 : 760, y: 270,

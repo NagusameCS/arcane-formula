@@ -59,7 +59,7 @@ const Spellbook = (() => {
         // Library browse button
         const libBtn = document.createElement('button');
         libBtn.className = 'spell-tab library-tab';
-        libBtn.innerHTML = '<span class="tab-num">📖</span><span class="tab-name">LIBRARY</span>';
+        libBtn.innerHTML = '<span class="tab-num">LIB</span><span class="tab-name">LIBRARY</span>';
         libBtn.addEventListener('click', toggleLibrary);
         tabsEl.appendChild(libBtn);
 
@@ -297,8 +297,36 @@ const Spellbook = (() => {
 
         const header = document.createElement('div');
         header.className = 'library-header';
-        header.innerHTML = '<h3>SPELL LIBRARY</h3><p>Click a spell to equip it in the current slot</p>';
+        header.innerHTML = '<h3>SPELL LIBRARY</h3><p>Drag a spell to a slot tab above to equip it</p>';
         libPanel.appendChild(header);
+
+        // Spell dock drop zones
+        let dockEl = document.getElementById('spellDock');
+        if (dockEl) {
+            dockEl.innerHTML = '';
+            for (let i = 0; i < 6; i++) {
+                const slot = document.createElement('div');
+                slot.className = 'dock-slot';
+                slot.dataset.slotIndex = i;
+                slot.innerHTML = '<span class="dock-num">' + (i + 1) + '</span><span class="dock-name">' + (spells[i].name || 'Empty') + '</span>';
+                slot.addEventListener('dragover', (e) => { e.preventDefault(); slot.classList.add('drag-over'); });
+                slot.addEventListener('dragleave', () => { slot.classList.remove('drag-over'); });
+                slot.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    slot.classList.remove('drag-over');
+                    try {
+                        const libSpellName = e.dataTransfer.getData('text/plain');
+                        const allSpells = SpellLibrary.getAll();
+                        const libSpell = allSpells.find(s => s.name === libSpellName);
+                        if (libSpell) {
+                            equipLibrarySpellToSlot(libSpell, i);
+                            updateDockSlots();
+                        }
+                    } catch(err) {}
+                });
+                dockEl.appendChild(slot);
+            }
+        }
 
         const categories = SpellLibrary.getCategories();
         for (const cat of categories) {
@@ -319,6 +347,7 @@ const Spellbook = (() => {
             for (const libSpell of catSpells) {
                 const card = document.createElement('div');
                 card.className = 'library-card';
+                card.draggable = true;
 
                 const name = document.createElement('div');
                 name.className = 'library-card-name';
@@ -331,6 +360,7 @@ const Spellbook = (() => {
                 const desc = document.createElement('div');
                 desc.className = 'library-card-desc';
                 desc.textContent = libSpell.desc || '';
+                desc.style.color = 'var(--dim)'; // Ensure descriptions are never red
 
                 // Preview LaTeX for X formula
                 const preview = document.createElement('div');
@@ -349,6 +379,15 @@ const Spellbook = (() => {
                     equipLibrarySpell(libSpell);
                 });
 
+                card.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.setData('text/plain', libSpell.name);
+                    e.dataTransfer.effectAllowed = 'copy';
+                    card.classList.add('dragging');
+                });
+                card.addEventListener('dragend', () => {
+                    card.classList.remove('dragging');
+                });
+
                 grid.appendChild(card);
             }
 
@@ -358,7 +397,11 @@ const Spellbook = (() => {
     }
 
     function equipLibrarySpell(libSpell) {
-        const spell = spells[currentSpell];
+        equipLibrarySpellToSlot(libSpell, currentSpell);
+    }
+
+    function equipLibrarySpellToSlot(libSpell, slotIdx) {
+        const spell = spells[slotIdx];
         spell.name = libSpell.name;
         spell.cost = libSpell.cost;
         spell.trees = {
@@ -367,16 +410,29 @@ const Spellbook = (() => {
             emit: Blocks.cloneNode(libSpell.emit),
             width: Blocks.cloneNode(libSpell.width),
         };
-        editors[currentSpell] = {};
-        updateSpellTab(currentSpell);
+        editors[slotIdx] = {};
+        updateSpellTab(slotIdx);
+        updateDockSlots();
 
-        // Switch back to editor
-        libraryVisible = false;
-        const libPanel = document.getElementById('libraryPanel');
-        const editorPanel = document.getElementById('spellEditorPanel');
-        if (libPanel) libPanel.classList.add('hidden');
-        if (editorPanel) editorPanel.classList.remove('hidden');
-        buildEditorPanel();
+        // If editing this slot, switch back to editor
+        if (slotIdx === currentSpell) {
+            libraryVisible = false;
+            const libPanel = document.getElementById('libraryPanel');
+            const editorPanel = document.getElementById('spellEditorPanel');
+            if (libPanel) libPanel.classList.add('hidden');
+            if (editorPanel) editorPanel.classList.remove('hidden');
+            buildEditorPanel();
+        }
+    }
+
+    function updateDockSlots() {
+        const dockEl = document.getElementById('spellDock');
+        if (!dockEl) return;
+        const slots = dockEl.querySelectorAll('.dock-slot');
+        slots.forEach((slot, i) => {
+            const nameEl = slot.querySelector('.dock-name');
+            if (nameEl) nameEl.textContent = spells[i].name || 'Empty';
+        });
     }
 
     function compileSpells() {

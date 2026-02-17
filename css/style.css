@@ -257,6 +257,10 @@ canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated;image-re
 }
 .mode-btn:hover{border-color:var(--gold);box-shadow:0 0 20px rgba(255,215,0,.15);transform:translateY(-2px)}
 .mode-icon{font-size:36px;margin-bottom:8px}
+.mode-icon-text{
+  font-size:22px;font-weight:bold;color:var(--gold);letter-spacing:4px;
+  margin-bottom:8px;font-family:inherit;
+}
 .mode-label{font-size:16px;color:var(--gold);letter-spacing:3px;margin-bottom:6px}
 .mode-desc{font-size:11px;color:var(--dim)}
 
@@ -299,3 +303,39 @@ canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated;image-re
   z-index:10;display:none;
 }
 .block-var:hover .var-ref{display:block}
+
+/* ── MINIMAP ── */
+#minimapCanvas{
+  width:150px;height:100px;border:1px solid var(--border);
+  background:#0a0806;image-rendering:pixelated;pointer-events:none;
+}
+
+/* ── SPELL DOCK (drag-drop targets in library) ── */
+#spellDock{
+  display:flex;flex-wrap:wrap;gap:4px;padding:8px 12px;border-bottom:1px solid var(--border);
+  background:var(--surface);
+}
+.dock-slot{
+  flex:1;min-width:80px;padding:8px;background:var(--bg);
+  border:2px dashed var(--border);text-align:center;
+  transition:all .15s;cursor:default;
+}
+.dock-slot .dock-num{
+  display:block;font-size:11px;color:var(--gold);font-weight:bold;margin-bottom:2px;
+}
+.dock-slot .dock-name{
+  display:block;font-size:9px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dock-slot.drag-over{
+  border-color:var(--gold);background:rgba(255,215,0,.08);
+  box-shadow:0 0 12px rgba(255,215,0,.2);
+}
+
+/* ── DRAG-DROP LIBRARY CARDS ── */
+.library-card{cursor:grab}
+.library-card:active{cursor:grabbing}
+.library-card.dragging{opacity:.5;transform:scale(.95)}
+
+/* ── FIX: Library card description should never be red ── */
+.library-card-desc{color:var(--dim)!important}
+.library-card-preview{color:var(--text)}

@@ -1,8 +1,9 @@
-// ─────────────────────────────────────────────
-//  ARCON PARTICLE SYSTEM (v2)
-//  — Instant mana return on arcon death
-//  — Better blocking: stationary arcons have 3x collision radius
-// ─────────────────────────────────────────────
+// -----------------------------------------
+//  ARCON PARTICLE SYSTEM (v3)
+//  -- Instant mana return on arcon death
+//  -- Better blocking: stationary arcons have 3x collision radius
+//  -- Campaign mode: no hardcoded bounds, uses world coords
+// -----------------------------------------
 
 const ArconSystem = (() => {
     const MAX_LIFETIME = 5.0;
@@ -10,14 +11,28 @@ const ArconSystem = (() => {
 
     let arcons = [];
     let contrails = [];
-    let manaReturnCallbacks = {}; // ownerId → callback(count)
+    let manaReturnCallbacks = {}; // ownerId -> callback(count)
+    let boundsMode = 'arena'; // 'arena' = 960x540, 'dungeon' = no bounds
+    let worldBounds = null; // { x, y, w, h } for dungeon mode
 
     function reset() { arcons = []; contrails = []; manaReturnCallbacks = {}; }
-
     function onManaReturn(ownerId, cb) { manaReturnCallbacks[ownerId] = cb; }
-
     function returnMana(ownerId, count) {
         if (manaReturnCallbacks[ownerId]) manaReturnCallbacks[ownerId](count);
+    }
+
+    function setBoundsMode(mode, bounds) {
+        boundsMode = mode;
+        worldBounds = bounds || null;
+    }
+
+    function isOutOfBounds(x, y) {
+        if (boundsMode === 'dungeon' && worldBounds) {
+            return x < worldBounds.x - 100 || x > worldBounds.x + worldBounds.w + 100 ||
+                   y < worldBounds.y - 100 || y > worldBounds.y + worldBounds.h + 100;
+        }
+        // Arena mode (PvP)
+        return x < -50 || x > 1010 || y < -50 || y > 590;
     }
 
     function castSpell(spell, caster, target, cursorX, cursorY) {
@@ -44,6 +59,9 @@ const ArconSystem = (() => {
                 castVars: { ...castVars }, randSeed: Math.random(), emitted: false,
             });
         }
+
+        if (typeof Audio !== 'undefined') Audio.cast();
+
         return { spell, caster, target, pendingArcons, castTime: 0, ownerId: caster.id, active: true };
     }
 
@@ -89,7 +107,12 @@ const ArconSystem = (() => {
 
         for (let i = arcons.length - 1; i >= 0; i--) {
             const a = arcons[i];
-            if (!a.alive) { if (!returns[a.ownerId]) returns[a.ownerId] = 0; returns[a.ownerId]++; arcons.splice(i, 1); continue; }
+            if (!a.alive) {
+                if (!returns[a.ownerId]) returns[a.ownerId] = 0;
+                returns[a.ownerId]++;
+                arcons.splice(i, 1);
+                continue;
+            }
 
             a.lifetime += dt;
             a.t += dt;
@@ -106,7 +129,7 @@ const ArconSystem = (() => {
             try { if (a.widthFn) a.width = Math.max(2, Math.min(20, a.widthFn(vars))); } catch(e) {}
 
             if (a.lifetime > MAX_LIFETIME) { a.alive = false; continue; }
-            if (a.x < -50 || a.x > 1010 || a.y < -50 || a.y > 590) { a.alive = false; continue; }
+            if (isOutOfBounds(a.x, a.y)) { a.alive = false; continue; }
 
             // Contrail
             contrails.push({ x: a.x, y: a.y, size: a.width * 0.6, life: 0.25, maxLife: 0.25, color: a.color });
@@ -131,7 +154,11 @@ const ArconSystem = (() => {
                 const dx = a.x - ent.x, dy = a.y - ent.y;
                 const hitDist = a.width / 2 + ent.hitRadius;
                 if (dx * dx + dy * dy < hitDist * hitDist) {
-                    if (spd >= MIN_SPEED_DMG) { ent.hp = Math.max(0, ent.hp - 1); ent.hitFlash = 0.15; }
+                    if (spd >= MIN_SPEED_DMG) {
+                        ent.hp = Math.max(0, ent.hp - 1);
+                        ent.hitFlash = 0.15;
+                        if (typeof Audio !== 'undefined') Audio.hit();
+                    }
                     a.alive = false;
                     // Hit sparks
                     for (let p = 0; p < 4; p++) {
@@ -147,7 +174,6 @@ const ArconSystem = (() => {
         }
 
         // Arcon vs arcon annihilation (Law 3)
-        // Stationary arcons (shields) have bigger hitbox — 3x effective radius
         for (let i = 0; i < arcons.length; i++) {
             if (!arcons[i].alive) continue;
             for (let j = i + 1; j < arcons.length; j++) {
@@ -156,7 +182,6 @@ const ArconSystem = (() => {
 
                 const a = arcons[i], b = arcons[j];
                 const spdA = speed(a), spdB = speed(b);
-                // Slow arcons act as blockers with bigger radius
                 const radiusA = spdA < 40 ? a.width * 2.5 : a.width;
                 const radiusB = spdB < 40 ? b.width * 2.5 : b.width;
 
@@ -177,7 +202,7 @@ const ArconSystem = (() => {
             }
         }
 
-        // Process dead arcons → instant mana return
+        // Process dead arcons -> instant mana return
         for (let i = arcons.length - 1; i >= 0; i--) {
             if (!arcons[i].alive) {
                 if (!returns[arcons[i].ownerId]) returns[arcons[i].ownerId] = 0;
@@ -224,5 +249,8 @@ const ArconSystem = (() => {
         ctx.globalAlpha = 1;
     }
 
-    return { reset, castSpell, updateCast, updateArcons, countActive, countPending, render, getArcons: () => arcons, onManaReturn };
+    return {
+        reset, castSpell, updateCast, updateArcons, countActive, countPending,
+        render, getArcons: () => arcons, onManaReturn, setBoundsMode,
+    };
 })();

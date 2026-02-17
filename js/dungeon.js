@@ -1,17 +1,16 @@
-// ─────────────────────────────────────────────
-//  DUNGEON SYSTEM — Procedural dungeon generation & rendering
+// -----------------------------------------
+//  DUNGEON SYSTEM -- Procedural generation, rendering, minimap
 //  Ported and adapted from Into-The-Deluge
-// ─────────────────────────────────────────────
+//  v2: zoom support, better collision, minimap, more spawns
+// -----------------------------------------
 
 const Dungeon = (() => {
-    // ── TILE TYPES ──
     const TILE = {
         VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3,
         STAIRS_DOWN: 4, CHEST: 5, TRAP: 6,
         TORCH_LIT: 7, BOSS_DOOR: 8, SPAWN: 9,
     };
 
-    // ── FLOOR THEMES (from Into-The-Deluge) ──
     const FLOOR_THEMES = {
         egypt: {
             name: 'Tomb of Ra',
@@ -59,14 +58,13 @@ const Dungeon = (() => {
 
     const FLOOR_ORDER = ['egypt', 'hades', 'jungle', 'light', 'cyber', 'stone'];
 
-    // ── GENERATOR CONFIG ──
     const MAP_W = 80, MAP_H = 60;
     const TILE_SIZE = 16;
     const MIN_ROOM = 6, MAX_ROOM = 14;
-    const ROOMS_PER_FLOOR = 8;
     const BOSS_ROOM_SIZE = 20;
+    const ZOOM = 2.0; // Camera zoom factor
 
-    // ── GENERATOR ──
+    // -- GENERATOR --
     function generate(floorIndex) {
         const theme = FLOOR_THEMES[FLOOR_ORDER[floorIndex % FLOOR_ORDER.length]];
         const map = [];
@@ -85,7 +83,7 @@ const Dungeon = (() => {
         for (let cy = 0; cy < 3; cy++) {
             for (let cx = 0; cx < 3; cx++) {
                 if (cx === 1 && cy === 1) continue; // Reserve center for boss
-                if (Math.random() < 0.3 && rooms.length >= 4) continue; // Skip some cells
+                if (Math.random() < 0.15 && rooms.length >= 5) continue;
 
                 const rw = MIN_ROOM + Math.floor(Math.random() * (MAX_ROOM - MIN_ROOM));
                 const rh = MIN_ROOM + Math.floor(Math.random() * (MAX_ROOM - MIN_ROOM));
@@ -116,7 +114,7 @@ const Dungeon = (() => {
             connectRooms(map, rooms[i], rooms[i + 1]);
         }
         // Extra connections for loops
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < 3; i++) {
             const a = rooms[Math.floor(Math.random() * rooms.length)];
             const b = rooms[Math.floor(Math.random() * rooms.length)];
             if (a !== b) connectRooms(map, a, b);
@@ -128,15 +126,13 @@ const Dungeon = (() => {
         // Place features
         for (const room of rooms) {
             if (room.isBoss) {
-                // Boss door at entrance
                 map[room.y][room.cx] = TILE.BOSS_DOOR;
-                // Spawn point in boss room
                 spawnPoints.push({ x: room.cx, y: room.cy + 5, type: 'boss' });
                 continue;
             }
 
-            // Random features in rooms
             const area = room.w * room.h;
+
             // Torches in corners
             const corners = [
                 [room.x + 1, room.y + 1], [room.x + room.w - 2, room.y + 1],
@@ -149,7 +145,7 @@ const Dungeon = (() => {
             }
 
             // Chests
-            if (Math.random() < 0.3) {
+            if (Math.random() < 0.35) {
                 const cx = room.x + 2 + Math.floor(Math.random() * (room.w - 4));
                 const cy = room.y + 2 + Math.floor(Math.random() * (room.h - 4));
                 if (map[cy] && map[cy][cx] === TILE.FLOOR) map[cy][cx] = TILE.CHEST;
@@ -157,31 +153,31 @@ const Dungeon = (() => {
 
             // Traps
             if (Math.random() < 0.3) {
-                for (let t = 0; t < 2; t++) {
+                for (let t = 0; t < 3; t++) {
                     const tx = room.x + 1 + Math.floor(Math.random() * (room.w - 2));
                     const ty = room.y + 1 + Math.floor(Math.random() * (room.h - 2));
                     if (map[ty] && map[ty][tx] === TILE.FLOOR) map[ty][tx] = TILE.TRAP;
                 }
             }
 
-            // Enemy spawn points
-            if (area > 50 && Math.random() < 0.6) {
-                const count = 1 + Math.floor(Math.random() * 3);
-                for (let e = 0; e < count; e++) {
-                    spawnPoints.push({
-                        x: room.x + 2 + Math.floor(Math.random() * (room.w - 4)),
-                        y: room.y + 2 + Math.floor(Math.random() * (room.h - 4)),
-                        type: 'enemy',
-                    });
-                }
+            // Enemy spawn points -- MUCH more enemies
+            const minEnemies = Math.max(2, Math.floor(area / 25));
+            const maxEnemies = Math.max(3, Math.floor(area / 15));
+            const count = minEnemies + Math.floor(Math.random() * (maxEnemies - minEnemies + 1));
+            for (let e = 0; e < count; e++) {
+                spawnPoints.push({
+                    x: room.x + 2 + Math.floor(Math.random() * (room.w - 4)),
+                    y: room.y + 2 + Math.floor(Math.random() * (room.h - 4)),
+                    type: 'enemy',
+                });
             }
         }
 
-        // Player spawn in first room
+        // Player spawn
         const startRoom = rooms[0];
         map[startRoom.cy][startRoom.cx] = TILE.SPAWN;
 
-        // Stairs down in second-to-last room
+        // Stairs
         const exitRoom = rooms[Math.max(0, rooms.length - 2)];
         map[exitRoom.cy][exitRoom.cx] = TILE.STAIRS_DOWN;
 
@@ -206,7 +202,6 @@ const Dungeon = (() => {
     function connectRooms(map, a, b) {
         let x = a.cx, y = a.cy;
         const tx = b.cx, ty = b.cy;
-        // L-shaped corridor
         while (x !== tx) {
             if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
                 map[y][x] = TILE.FLOOR;
@@ -221,7 +216,6 @@ const Dungeon = (() => {
             }
             y += y < ty ? 1 : -1;
         }
-        // Place door at connection point
         if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
             map[y][x] = TILE.DOOR;
         }
@@ -232,7 +226,6 @@ const Dungeon = (() => {
         for (let y = 0; y < MAP_H; y++) {
             for (let x = 0; x < MAP_W; x++) {
                 if (temp[y][x] !== TILE.VOID) continue;
-                // Check neighbors for floor
                 for (let dy = -1; dy <= 1; dy++) {
                     for (let dx = -1; dx <= 1; dx++) {
                         const ny = y + dy, nx = x + dx;
@@ -247,7 +240,7 @@ const Dungeon = (() => {
         }
     }
 
-    // ── PRE-RENDERER ──
+    // -- PRE-RENDERER --
     let preRendered = null;
     let currentTheme = null;
 
@@ -258,7 +251,6 @@ const Dungeon = (() => {
         canvas.height = dungeon.pixelH;
         const ctx = canvas.getContext('2d');
 
-        // Fill with void
         ctx.fillStyle = currentTheme.void;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -276,19 +268,16 @@ const Dungeon = (() => {
     function renderTile(ctx, tile, px, py, theme, tx, ty) {
         const S = TILE_SIZE;
         switch (tile) {
-            case TILE.VOID:
-                break;
+            case TILE.VOID: break;
             case TILE.FLOOR:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Subtle floor texture
                 if ((tx + ty) % 3 === 0) {
                     ctx.globalAlpha = 0.08;
                     ctx.fillStyle = '#000';
                     ctx.fillRect(px, py, S, S);
                     ctx.globalAlpha = 1;
                 }
-                // Floor crack details
                 if ((tx * 7 + ty * 13) % 17 === 0) {
                     ctx.globalAlpha = 0.15;
                     ctx.fillStyle = '#000';
@@ -299,7 +288,6 @@ const Dungeon = (() => {
             case TILE.WALL:
                 ctx.fillStyle = theme.wall;
                 ctx.fillRect(px, py, S, S);
-                // Wall edge highlights
                 ctx.globalAlpha = 0.15;
                 ctx.fillStyle = theme.highlight;
                 ctx.fillRect(px, py, S, 2);
@@ -321,7 +309,6 @@ const Dungeon = (() => {
             case TILE.STAIRS_DOWN:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Draw stairs icon
                 ctx.fillStyle = theme.accent;
                 for (let i = 0; i < 4; i++) {
                     ctx.fillRect(px + 2, py + 2 + i * 3, S - 4 - i * 2, 2);
@@ -330,7 +317,6 @@ const Dungeon = (() => {
             case TILE.CHEST:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Chest
                 ctx.fillStyle = '#8B4513';
                 ctx.fillRect(px + 2, py + 4, S - 4, S - 6);
                 ctx.fillStyle = '#DAA520';
@@ -340,7 +326,6 @@ const Dungeon = (() => {
             case TILE.TRAP:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Subtle trap lines
                 ctx.globalAlpha = 0.2;
                 ctx.strokeStyle = theme.accent;
                 ctx.lineWidth = 0.5;
@@ -355,15 +340,12 @@ const Dungeon = (() => {
             case TILE.TORCH_LIT:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Torch base
                 ctx.fillStyle = '#654321';
                 ctx.fillRect(px + S/2 - 1, py + 4, 2, S - 4);
-                // Flame
                 ctx.fillStyle = '#ff8800';
                 ctx.fillRect(px + S/2 - 2, py + 1, 4, 4);
                 ctx.fillStyle = '#ffcc00';
                 ctx.fillRect(px + S/2 - 1, py + 2, 2, 2);
-                // Glow
                 ctx.globalAlpha = 0.06;
                 ctx.fillStyle = '#ffaa00';
                 const glow = TILE_SIZE * 3;
@@ -377,7 +359,6 @@ const Dungeon = (() => {
                 ctx.globalAlpha = 0.3;
                 ctx.fillRect(px + 2, py + 1, S - 4, S - 2);
                 ctx.globalAlpha = 1;
-                // Skull icon
                 ctx.fillStyle = '#fff';
                 ctx.fillRect(px + 4, py + 3, 2, 2);
                 ctx.fillRect(px + S - 6, py + 3, 2, 2);
@@ -387,7 +368,6 @@ const Dungeon = (() => {
             case TILE.SPAWN:
                 ctx.fillStyle = theme.floor;
                 ctx.fillRect(px, py, S, S);
-                // Spawn glyph
                 ctx.globalAlpha = 0.2;
                 ctx.fillStyle = theme.highlight;
                 ctx.fillRect(px + S/2 - 3, py + 2, 6, S - 4);
@@ -397,21 +377,27 @@ const Dungeon = (() => {
         }
     }
 
-    // ── CAMERA ──
+    // -- CAMERA (with zoom) --
     let camera = { x: 0, y: 0 };
 
     function updateCamera(targetX, targetY, canvasW, canvasH, dungeon) {
-        const tx = targetX * TILE_SIZE - canvasW / 2;
-        const ty = targetY * TILE_SIZE - canvasH / 2;
+        // Viewport is smaller when zoomed in
+        const viewW = canvasW / ZOOM;
+        const viewH = canvasH / ZOOM;
+        const tx = targetX * TILE_SIZE - viewW / 2;
+        const ty = targetY * TILE_SIZE - viewH / 2;
         camera.x += (tx - camera.x) * 0.1;
         camera.y += (ty - camera.y) * 0.1;
-        camera.x = Math.max(0, Math.min(dungeon.pixelW - canvasW, camera.x));
-        camera.y = Math.max(0, Math.min(dungeon.pixelH - canvasH, camera.y));
+        camera.x = Math.max(0, Math.min(dungeon.pixelW - viewW, camera.x));
+        camera.y = Math.max(0, Math.min(dungeon.pixelH - viewH, camera.y));
     }
 
     function render(ctx, canvasW, canvasH) {
         if (!preRendered) return;
+        ctx.save();
+        ctx.scale(ZOOM, ZOOM);
         ctx.drawImage(preRendered, -camera.x, -camera.y);
+        ctx.restore();
     }
 
     function tileAt(dungeon, tx, ty) {
@@ -419,18 +405,134 @@ const Dungeon = (() => {
         return dungeon.map[ty][tx];
     }
 
+    function isTileWalkable(tile) {
+        return tile === TILE.FLOOR || tile === TILE.DOOR || tile === TILE.STAIRS_DOWN ||
+               tile === TILE.CHEST || tile === TILE.TRAP || tile === TILE.TORCH_LIT ||
+               tile === TILE.SPAWN || tile === TILE.BOSS_DOOR;
+    }
+
     function isWalkable(dungeon, px, py) {
         const tx = Math.floor(px / TILE_SIZE);
         const ty = Math.floor(py / TILE_SIZE);
-        const tile = tileAt(dungeon, tx, ty);
-        return tile === TILE.FLOOR || tile === TILE.DOOR || tile === TILE.STAIRS_DOWN ||
-               tile === TILE.CHEST || tile === TILE.TRAP || tile === TILE.TORCH_LIT ||
-               tile === TILE.SPAWN;
+        return isTileWalkable(tileAt(dungeon, tx, ty));
+    }
+
+    // Multi-point collision for entities with radius
+    function isWalkableBox(dungeon, px, py, radius) {
+        const r = radius || 5;
+        return isWalkable(dungeon, px - r, py - r) &&
+               isWalkable(dungeon, px + r, py - r) &&
+               isWalkable(dungeon, px - r, py + r) &&
+               isWalkable(dungeon, px + r, py + r);
+    }
+
+    // -- MINIMAP --
+    function renderMinimap(minimapCanvas, dungeon, playerX, playerY, allies) {
+        const mctx = minimapCanvas.getContext('2d');
+        const mw = minimapCanvas.width;
+        const mh = minimapCanvas.height;
+        const scaleX = mw / MAP_W;
+        const scaleY = mh / MAP_H;
+
+        mctx.fillStyle = 'rgba(0,0,0,0.8)';
+        mctx.fillRect(0, 0, mw, mh);
+
+        // Draw tiles
+        for (let y = 0; y < MAP_H; y++) {
+            for (let x = 0; x < MAP_W; x++) {
+                const tile = dungeon.map[y][x];
+                if (tile === TILE.VOID) continue;
+                const mx = x * scaleX;
+                const my = y * scaleY;
+                switch (tile) {
+                    case TILE.WALL:
+                        mctx.fillStyle = 'rgba(100,90,70,0.5)';
+                        break;
+                    case TILE.STAIRS_DOWN:
+                        mctx.fillStyle = '#ffd700';
+                        break;
+                    case TILE.BOSS_DOOR:
+                        mctx.fillStyle = '#ff4444';
+                        break;
+                    case TILE.CHEST:
+                        mctx.fillStyle = '#daa520';
+                        break;
+                    default:
+                        mctx.fillStyle = 'rgba(80,70,55,0.35)';
+                        break;
+                }
+                mctx.fillRect(mx, my, Math.ceil(scaleX), Math.ceil(scaleY));
+            }
+        }
+
+        // Player dot
+        const ptx = (playerX / TILE_SIZE) * scaleX;
+        const pty = (playerY / TILE_SIZE) * scaleY;
+        mctx.fillStyle = '#4488ff';
+        mctx.fillRect(ptx - 2, pty - 2, 4, 4);
+        // Blink effect
+        if (Math.sin(performance.now() / 200) > 0) {
+            mctx.fillStyle = 'rgba(68,136,255,0.3)';
+            mctx.fillRect(ptx - 4, pty - 4, 8, 8);
+        }
+
+        // Allies
+        if (allies) {
+            for (const ally of allies) {
+                const ax = (ally.x / TILE_SIZE) * scaleX;
+                const ay = (ally.y / TILE_SIZE) * scaleY;
+                mctx.fillStyle = '#44cc66';
+                mctx.fillRect(ax - 2, ay - 2, 4, 4);
+            }
+        }
+
+        // Enemy dots
+        const enemies = typeof Enemies !== 'undefined' ? Enemies.getEnemies() : [];
+        for (const e of enemies) {
+            const ex = (e.x / TILE_SIZE) * scaleX;
+            const ey = (e.y / TILE_SIZE) * scaleY;
+            mctx.fillStyle = e.isBoss ? '#ff4444' : 'rgba(255,80,60,0.6)';
+            const dotSize = e.isBoss ? 4 : 2;
+            mctx.fillRect(ex - dotSize/2, ey - dotSize/2, dotSize, dotSize);
+        }
+
+        // Border
+        mctx.strokeStyle = 'rgba(255,215,0,0.3)';
+        mctx.lineWidth = 1;
+        mctx.strokeRect(0, 0, mw, mh);
+
+        // Camera viewport indicator
+        const viewW = 960 / ZOOM;
+        const viewH = 540 / ZOOM;
+        const cvx = (camera.x / TILE_SIZE) * scaleX;
+        const cvy = (camera.y / TILE_SIZE) * scaleY;
+        const cvw = (viewW / TILE_SIZE) * scaleX;
+        const cvh = (viewH / TILE_SIZE) * scaleY;
+        mctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        mctx.lineWidth = 1;
+        mctx.strokeRect(cvx, cvy, cvw, cvh);
+    }
+
+    // Convert screen coords to world coords (accounting for zoom)
+    function screenToWorld(screenX, screenY) {
+        return {
+            x: screenX / ZOOM + camera.x,
+            y: screenY / ZOOM + camera.y,
+        };
+    }
+
+    // Convert world coords to screen coords
+    function worldToScreen(worldX, worldY) {
+        return {
+            x: (worldX - camera.x) * ZOOM,
+            y: (worldY - camera.y) * ZOOM,
+        };
     }
 
     return {
-        TILE, FLOOR_THEMES, FLOOR_ORDER, TILE_SIZE, MAP_W, MAP_H,
-        generate, preRender, render, updateCamera, tileAt, isWalkable,
+        TILE, FLOOR_THEMES, FLOOR_ORDER, TILE_SIZE, MAP_W, MAP_H, ZOOM,
+        generate, preRender, render, updateCamera, tileAt, isWalkable, isWalkableBox,
         getCamera: () => camera,
+        renderMinimap, screenToWorld, worldToScreen,
     };
 })();

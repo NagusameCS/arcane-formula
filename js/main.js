@@ -205,8 +205,12 @@
         return { x: (e.clientX - rect.left) * (W / rect.width), y: (e.clientY - rect.top) * (H / rect.height) };
     }
 
-    canvas.addEventListener('click', () => { if (state === 'intro') Intro.onClick(); });
+    canvas.addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.ensureCtx();
+        if (state === 'intro') Intro.onClick();
+    });
     canvas.addEventListener('mousedown', (e) => {
+        if (typeof Audio !== 'undefined') Audio.ensureCtx();
         if (state === 'intro') Intro.onMouseDown();
         else if (state === 'battle') { const c = getCanvasCoords(e); Battle.onMouseDown(c.x, c.y); }
         else if (state === 'campaign') { const c = getCanvasCoords(e); Campaign.onMouseDown(c.x, c.y); }

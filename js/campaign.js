@@ -1,11 +1,10 @@
-// ─────────────────────────────────────────────
-//  CAMPAIGN MODE — Co-op dungeon clearing
-//  Uses Dungeon, Enemies, and ArconSystem together
-// ─────────────────────────────────────────────
+// -----------------------------------------
+//  CAMPAIGN MODE -- Co-op dungeon clearing
+//  v2: Fixed spells, mana regen, wall dash, zoom, cutscenes, minimap
+// -----------------------------------------
 
 const Campaign = (() => {
     const MANA_MAX = 100;
-    const MANA_REGEN = 5;
     const HP_MAX = 150;
     const DASH_SPEED = 700;
     const DASH_DURATION = 0.15;
@@ -13,6 +12,7 @@ const Campaign = (() => {
     const DASH_CHAIN_WINDOW = 0.15;
     const DASH_INVULN = 0.25;
     const SYNC_RATE = 1 / 20;
+    const PLAYER_RADIUS = 6;
 
     let player, allies;
     let playerSpells = [];
@@ -30,8 +30,11 @@ const Campaign = (() => {
     let bossDefeated = false;
     let floorCleared = false;
     let particles = [];
+    let bossIntroPlayed = false;
+    let floorIntroPlayed = false;
+    let floorIntroTimer = 0;
 
-    // ── SCREEN EFFECTS ──
+    // Screen effects
     let screenShake = { x: 0, y: 0 };
     let hitFreeze = 0;
     let flashAlpha = 0;
@@ -41,6 +44,13 @@ const Campaign = (() => {
         currentFloor = floor || 0;
         currentDungeon = Dungeon.generate(currentFloor);
         Dungeon.preRender(currentDungeon);
+
+        // Set arcon bounds to dungeon world space
+        ArconSystem.setBoundsMode('dungeon', {
+            x: 0, y: 0,
+            w: currentDungeon.pixelW,
+            h: currentDungeon.pixelH,
+        });
 
         player = {
             id: 'player',
@@ -61,6 +71,9 @@ const Campaign = (() => {
         gameOver = false;
         floorCleared = false;
         bossDefeated = false;
+        bossIntroPlayed = false;
+        floorIntroPlayed = false;
+        floorIntroTimer = 2.5;
         chestsOpened = 0;
         xpGained = 0;
         keys = {};
@@ -74,16 +87,43 @@ const Campaign = (() => {
         Enemies.reset();
         Enemies.spawnFromDungeon(currentDungeon);
 
+        // Mana returns ONLY when arcons die/dissipate
         ArconSystem.onManaReturn('player', (count) => {
             player.mana = Math.min(MANA_MAX, player.mana + count);
         });
 
         document.getElementById('campaign-hud').classList.remove('hidden');
         document.getElementById('victory-screen').classList.add('hidden');
+
+        // Reset spell HUD
+        const keysDiv = document.getElementById('camp-spellKeys');
+        if (keysDiv) keysDiv.innerHTML = '';
+
+        // Start floor music
+        const themeKey = Dungeon.FLOOR_ORDER[currentFloor % Dungeon.FLOOR_ORDER.length];
+        if (typeof Audio !== 'undefined') Audio.startMusic(themeKey);
+
+        // Floor intro cutscene
+        if (typeof Cutscene !== 'undefined' && floor === 0) {
+            Cutscene.startFloorIntro(themeKey, () => { floorIntroPlayed = true; });
+        } else {
+            floorIntroPlayed = true;
+        }
     }
 
     function update(dt) {
-        if (gameOver || paused) return;
+        if (gameOver) return;
+
+        // Cutscene active - pause gameplay
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) {
+            Cutscene.update(dt);
+            return;
+        }
+
+        // Floor intro timer
+        if (floorIntroTimer > 0) {
+            floorIntroTimer -= dt;
+        }
 
         // Hit freeze
         if (hitFreeze > 0) {
@@ -91,7 +131,7 @@ const Campaign = (() => {
             return;
         }
 
-        // ── Player movement ──
+        // Player movement
         let mx = 0, my = 0;
         if (keys['w'] || keys['arrowup']) my -= 1;
         if (keys['s'] || keys['arrowdown']) my += 1;
@@ -100,24 +140,26 @@ const Campaign = (() => {
 
         // Chain dash window
         if (player.dashChainWindow > 0) player.dashChainWindow -= dt;
-
-        // Invulnerability
         if (player.invulnTimer > 0) player.invulnTimer -= dt;
 
-        // Dash movement
+        // Dash movement - with wall collision using box checks
         if (player.dashing) {
             player.dashTimer -= dt;
-            const dashMul = 1 + player.dashChainCount * 0.15; // Chain dashes get faster
+            const dashMul = 1 + player.dashChainCount * 0.15;
             const nx = player.x + player.dashDirX * DASH_SPEED * dashMul * dt;
             const ny = player.y + player.dashDirY * DASH_SPEED * dashMul * dt;
 
-            if (Dungeon.isWalkable(currentDungeon, nx, ny)) {
+            // Use box collision to prevent going through walls
+            if (Dungeon.isWalkableBox(currentDungeon, nx, ny, PLAYER_RADIUS)) {
                 player.x = nx;
                 player.y = ny;
-            } else if (Dungeon.isWalkable(currentDungeon, nx, player.y)) {
+            } else if (Dungeon.isWalkableBox(currentDungeon, nx, player.y, PLAYER_RADIUS)) {
                 player.x = nx;
-            } else if (Dungeon.isWalkable(currentDungeon, player.x, ny)) {
+            } else if (Dungeon.isWalkableBox(currentDungeon, player.x, ny, PLAYER_RADIUS)) {
                 player.y = ny;
+            } else {
+                // Hit wall during dash - stop early
+                player.dashTimer = 0;
             }
 
             // Dash trail
@@ -135,7 +177,6 @@ const Campaign = (() => {
             if (player.dashTimer <= 0) {
                 player.dashing = false;
                 player.dashChainWindow = DASH_CHAIN_WINDOW;
-                // End-dash burst
                 for (let p = 0; p < 12; p++) {
                     particles.push({
                         x: player.x + (Math.random() - 0.5) * 20,
@@ -152,44 +193,72 @@ const Campaign = (() => {
             const nx = player.x + (mx / len) * player.speed * dt;
             const ny = player.y + (my / len) * player.speed * dt;
 
-            if (Dungeon.isWalkable(currentDungeon, nx, ny)) {
+            if (Dungeon.isWalkableBox(currentDungeon, nx, ny, PLAYER_RADIUS)) {
                 player.x = nx;
                 player.y = ny;
-            } else if (Dungeon.isWalkable(currentDungeon, nx, player.y)) {
+            } else if (Dungeon.isWalkableBox(currentDungeon, nx, player.y, PLAYER_RADIUS)) {
                 player.x = nx;
-            } else if (Dungeon.isWalkable(currentDungeon, player.x, ny)) {
+            } else if (Dungeon.isWalkableBox(currentDungeon, player.x, ny, PLAYER_RADIUS)) {
                 player.y = ny;
             }
         }
 
         if (player.dashCooldown > 0) player.dashCooldown -= dt;
 
-        // ── Mana regen ──
-        player.mana = Math.min(MANA_MAX, player.mana + MANA_REGEN * dt);
+        // NO passive mana regen -- mana only returns when arcons die
         if (player.hitFlash > 0) player.hitFlash -= dt;
 
-        // ── Spell cooldowns ──
+        // Spell cooldowns
         for (const s of playerSpells) { if (s.currentCooldown > 0) s.currentCooldown -= dt; }
 
-        // ── Update casts ──
+        // Update casts (emit pending arcons)
         for (const c of playerCasts) ArconSystem.updateCast(c, dt);
+        for (const c of allyCasts) ArconSystem.updateCast(c, dt);
         playerCasts = playerCasts.filter(c => c.active);
+        allyCasts = allyCasts.filter(c => c.active);
 
-        // ── Update arcons vs enemies ──
+        // Update arcons - pass player and allies as entities
+        // In campaign, arcons use WORLD coordinates
+        const worldEntities = [player, ...allies];
+        ArconSystem.updateArcons(dt, worldEntities);
+
+        // Arcon vs enemy collision
         updateArconsVsEnemies(dt);
 
-        // ── Update enemies ──
+        // Update enemies
         const playersArr = [player, ...allies];
         Enemies.update(dt, playersArr, currentDungeon);
 
-        // ── Camera ──
+        // Boss intro cutscene
+        if (!bossIntroPlayed) {
+            const bossAlive = Enemies.getEnemies().find(e => e.isBoss);
+            if (bossAlive) {
+                const pdx = player.x - bossAlive.x;
+                const pdy = player.y - bossAlive.y;
+                const bDist = Math.sqrt(pdx * pdx + pdy * pdy);
+                if (bDist < 200) {
+                    bossIntroPlayed = true;
+                    if (typeof Audio !== 'undefined') Audio.bossMusic();
+                    if (typeof Cutscene !== 'undefined') {
+                        Cutscene.startBossIntro(bossAlive.name, () => {});
+                    }
+                }
+            }
+        }
+
+        // Update cutscene taunts
+        if (typeof Cutscene !== 'undefined') {
+            Cutscene.updateTaunts(dt);
+        }
+
+        // Camera (zoom is handled inside Dungeon)
         Dungeon.updateCamera(
             player.x / Dungeon.TILE_SIZE,
             player.y / Dungeon.TILE_SIZE,
             960, 540, currentDungeon
         );
 
-        // ── Tile interactions ──
+        // Tile interactions
         const ptx = Math.floor(player.x / Dungeon.TILE_SIZE);
         const pty = Math.floor(player.y / Dungeon.TILE_SIZE);
         const tile = Dungeon.tileAt(currentDungeon, ptx, pty);
@@ -201,6 +270,7 @@ const Campaign = (() => {
             player.mana = MANA_MAX;
             flashAlpha = 0.3;
             Dungeon.preRender(currentDungeon);
+            if (typeof Audio !== 'undefined') Audio.chest();
         }
         if (tile === Dungeon.TILE.TRAP) {
             currentDungeon.map[pty][ptx] = Dungeon.TILE.FLOOR;
@@ -208,23 +278,25 @@ const Campaign = (() => {
                 player.hp -= 15;
                 player.hitFlash = 0.3;
                 screenShake = { x: 3, y: 3 };
+                if (typeof Audio !== 'undefined') Audio.trap();
             }
             Dungeon.preRender(currentDungeon);
         }
         if (tile === Dungeon.TILE.STAIRS_DOWN && floorCleared) {
-            // Advance floor
+            if (typeof Audio !== 'undefined') Audio.stairsDown();
             init(playerSpells, currentFloor + 1);
             return;
         }
 
-        // ── Check boss defeated ──
+        // Check floor cleared
         const bossAlive = Enemies.getEnemies().some(e => e.isBoss);
         if (!bossAlive && Enemies.getEnemies().length === 0 && !floorCleared) {
             floorCleared = true;
             flashAlpha = 0.5;
+            if (typeof Audio !== 'undefined') Audio.floorClear();
         }
 
-        // ── Particles ──
+        // Particles
         for (let i = particles.length - 1; i >= 0; i--) {
             const p = particles[i];
             p.x += p.vx * dt;
@@ -237,9 +309,11 @@ const Campaign = (() => {
         const theme = currentDungeon.theme;
         if (Math.random() < 0.15) {
             const cam = Dungeon.getCamera();
+            const viewW = 960 / Dungeon.ZOOM;
+            const viewH = 540 / Dungeon.ZOOM;
             particles.push({
-                x: cam.x + Math.random() * 960,
-                y: cam.y + Math.random() * 540,
+                x: cam.x + Math.random() * viewW,
+                y: cam.y + Math.random() * viewH,
                 vx: (Math.random() - 0.5) * 10,
                 vy: -5 - Math.random() * 10,
                 life: 3, maxLife: 3, size: 1 + Math.random(),
@@ -247,7 +321,7 @@ const Campaign = (() => {
             });
         }
 
-        // ── Screen effects ──
+        // Screen effects
         if (flashAlpha > 0) flashAlpha -= dt * 2;
         const shake = Enemies.getShake();
         if (shake > 0) {
@@ -258,16 +332,16 @@ const Campaign = (() => {
             screenShake.y *= 0.85;
         }
 
-        // Vignette when low HP
         vignetteIntensity = Math.max(0, 1 - player.hp / player.maxHp) * 0.4;
 
-        // ── Death ──
+        // Death
         if (player.hp <= 0 && !gameOver) {
             gameOver = true;
+            if (typeof Audio !== 'undefined') { Audio.death(); Audio.stopMusic(); }
             showCampaignEnd(false);
         }
 
-        // ── Network sync ──
+        // Network sync
         syncTimer -= dt;
         if (syncTimer <= 0 && Network.isConnected()) {
             syncTimer = SYNC_RATE;
@@ -301,7 +375,7 @@ const Campaign = (() => {
             }
         }
 
-        // Also check enemy projectiles vs arcons (annihilation)
+        // Enemy projectiles vs player arcons (annihilation)
         const effects = Enemies.getEffects();
         for (let i = effects.length - 1; i >= 0; i--) {
             const fx = effects[i];
@@ -321,6 +395,7 @@ const Campaign = (() => {
 
     function castSpell(index) {
         if (gameOver) return;
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) return;
         if (index < 0 || index >= playerSpells.length) return;
         const spell = playerSpells[index];
         if (spell.currentCooldown > 0) return;
@@ -329,11 +404,13 @@ const Campaign = (() => {
         player.mana -= spell.cost;
         spell.currentCooldown = spell.cooldown;
 
-        // Create a dummy target (enemy closest to cursor)
+        // Convert screen mouse to world coordinates
         const cam = Dungeon.getCamera();
-        const worldX = mouse.x + cam.x;
-        const worldY = mouse.y + cam.y;
+        const world = Dungeon.screenToWorld(mouse.x, mouse.y);
+        const worldX = world.x;
+        const worldY = world.y;
 
+        // Find closest enemy to aim at
         let closestEnemy = { x: worldX, y: worldY, id: 'target' };
         let closestDist = Infinity;
         for (const e of Enemies.getEnemies()) {
@@ -360,11 +437,10 @@ const Campaign = (() => {
     }
 
     function doDash() {
-        // Chain dash check
         if (player.dashing) return;
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) return;
 
         const isChain = player.dashChainWindow > 0 && player.dashChainCount > 0;
-
         if (!isChain && player.dashCooldown > 0) return;
 
         let dx = 0, dy = 0;
@@ -374,9 +450,9 @@ const Campaign = (() => {
         if (keys['d'] || keys['arrowright']) dx += 1;
 
         if (dx === 0 && dy === 0) {
-            const cam = Dungeon.getCamera();
-            dx = (mouse.x + cam.x) - player.x;
-            dy = (mouse.y + cam.y) - player.y;
+            const world = Dungeon.screenToWorld(mouse.x, mouse.y);
+            dx = world.x - player.x;
+            dy = world.y - player.y;
         }
 
         const len = Math.sqrt(dx * dx + dy * dy);
@@ -396,14 +472,16 @@ const Campaign = (() => {
             player.dashCooldown = DASH_COOLDOWN;
         }
 
-        // Dash sound effect (visual)
         flashAlpha = 0.05;
+        if (typeof Audio !== 'undefined') Audio.dash();
 
-        Network.send && Network.isConnected() && Network.send({
-            type: 'campaign-dash',
-            dirX: player.dashDirX, dirY: player.dashDirY,
-            chain: player.dashChainCount,
-        });
+        if (Network.isConnected()) {
+            Network.send({
+                type: 'campaign-dash',
+                dirX: player.dashDirX, dirY: player.dashDirY,
+                chain: player.dashChainCount,
+            });
+        }
     }
 
     function handleNetMessage(data) {
@@ -411,7 +489,6 @@ const Campaign = (() => {
 
         switch (data.type) {
             case 'campaign-state': {
-                // Update ally position
                 let ally = allies.find(a => a.id === 'ally');
                 if (!ally) {
                     ally = {
@@ -457,12 +534,6 @@ const Campaign = (() => {
                 }
                 break;
             }
-            case 'campaign-enemy-hit': {
-                const enemies = Enemies.getEnemies();
-                const e = enemies.find(en => en.name === data.enemyName);
-                if (e) Enemies.damageEnemy(e, data.dmg);
-                break;
-            }
         }
     }
 
@@ -475,60 +546,75 @@ const Campaign = (() => {
         if (win) {
             h1.textContent = 'FLOOR CLEARED';
             h1.style.color = '#ffd700';
-            sub.textContent = `XP: ${xpGained} | Chests: ${chestsOpened}`;
+            sub.textContent = 'XP: ' + xpGained + ' | Chests: ' + chestsOpened;
         } else {
             h1.textContent = 'FALLEN';
             h1.style.color = '#ff4444';
-            sub.textContent = `Floor ${currentFloor + 1} - ${currentDungeon.theme.name}`;
+            sub.textContent = 'Floor ' + (currentFloor + 1) + ' - ' + currentDungeon.theme.name;
         }
     }
 
     function render(ctx, W, H) {
         const cam = Dungeon.getCamera();
+        const ZOOM = Dungeon.ZOOM;
 
         // Apply screen shake
         ctx.save();
         ctx.translate(screenShake.x, screenShake.y);
 
-        // Render dungeon
+        // Render dungeon (handles zoom internally)
         Dungeon.render(ctx, W, H);
 
-        // Render enemies
+        // Render enemies (handles zoom internally)
         Enemies.render(ctx, cam.x, cam.y);
 
-        // Render arcons (offset by camera)
+        // Render arcons (need to be transformed to screen space)
         ctx.save();
+        ctx.scale(ZOOM, ZOOM);
         ctx.translate(-cam.x, -cam.y);
         ArconSystem.render(ctx);
         ctx.restore();
 
-        // Render particles
+        // Render particles (world coords -> screen)
+        ctx.save();
+        ctx.scale(ZOOM, ZOOM);
         for (const p of particles) {
             const sx = p.x - cam.x, sy = p.y - cam.y;
-            if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
+            if (sx < -10 || sx > W/ZOOM + 10 || sy < -10 || sy > H/ZOOM + 10) continue;
             ctx.globalAlpha = (p.life / p.maxLife) * 0.6;
             ctx.fillStyle = p.color;
             ctx.fillRect(sx - p.size/2, sy - p.size/2, p.size, p.size);
         }
         ctx.globalAlpha = 1;
+        ctx.restore();
 
         // Render allies
         for (const ally of allies) {
-            renderCampaignMage(ctx, ally, cam, '#44cc66', '#88ff88');
+            renderCampaignMage(ctx, ally, cam, ZOOM, '#44cc66', '#88ff88');
         }
 
         // Render player
-        renderCampaignMage(ctx, player, cam, '#4488ff', '#88bbff');
+        renderCampaignMage(ctx, player, cam, ZOOM, '#4488ff', '#88bbff');
+
+        // Render boss taunts
+        if (typeof Cutscene !== 'undefined') {
+            ctx.save();
+            ctx.scale(ZOOM, ZOOM);
+            Cutscene.renderTaunts(ctx, cam.x, cam.y);
+            ctx.restore();
+        }
 
         // Aim line
         if (!gameOver) {
+            const world = Dungeon.screenToWorld(mouse.x, mouse.y);
+            const pScreen = Dungeon.worldToScreen(player.x, player.y);
+
             ctx.globalAlpha = 0.08;
             ctx.strokeStyle = '#4488ff';
             ctx.lineWidth = 1;
             ctx.setLineDash([3, 5]);
             ctx.beginPath();
-            const px = player.x - cam.x, py = player.y - cam.y;
-            ctx.moveTo(px, py);
+            ctx.moveTo(pScreen.x, pScreen.y);
             ctx.lineTo(mouse.x, mouse.y);
             ctx.stroke();
             ctx.setLineDash([]);
@@ -546,7 +632,7 @@ const Campaign = (() => {
 
         ctx.restore(); // screen shake
 
-        // ── POST-PROCESSING ──
+        // POST-PROCESSING
 
         // Screen flash
         if (flashAlpha > 0) {
@@ -560,18 +646,36 @@ const Campaign = (() => {
         if (vignetteIntensity > 0.05) {
             const grad = ctx.createRadialGradient(W/2, H/2, W * 0.3, W/2, H/2, W * 0.7);
             grad.addColorStop(0, 'rgba(0,0,0,0)');
-            grad.addColorStop(1, `rgba(80,0,0,${vignetteIntensity})`);
+            grad.addColorStop(1, 'rgba(80,0,0,' + vignetteIntensity + ')');
             ctx.fillStyle = grad;
             ctx.fillRect(0, 0, W, H);
         }
 
-        // Floor info
+        // Floor info overlay (fades in/out)
+        if (floorIntroTimer > 0) {
+            const alpha = Math.min(1, floorIntroTimer / 1.0);
+            const theme = currentDungeon.theme;
+            ctx.globalAlpha = alpha * 0.8;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, H/2 - 40, W, 80);
+            ctx.globalAlpha = alpha;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = theme.accent;
+            ctx.font = 'bold 22px "Courier New", monospace';
+            ctx.fillText('FLOOR ' + (currentFloor + 1), W/2, H/2 - 8);
+            ctx.font = '14px "Courier New", monospace';
+            ctx.fillStyle = '#d4c5a0';
+            ctx.fillText(theme.name, W/2, H/2 + 18);
+            ctx.globalAlpha = 1;
+        }
+
+        // Floor corner info
         const theme = currentDungeon.theme;
         ctx.globalAlpha = 0.4;
         ctx.fillStyle = theme.accent;
         ctx.font = '10px "Courier New", monospace';
         ctx.textAlign = 'right';
-        ctx.fillText(`FLOOR ${currentFloor + 1} — ${theme.name.toUpperCase()}`, W - 10, H - 8);
+        ctx.fillText('FLOOR ' + (currentFloor + 1) + ' -- ' + theme.name.toUpperCase(), W - 10, H - 8);
         ctx.globalAlpha = 1;
 
         // Floor cleared message
@@ -580,32 +684,45 @@ const Campaign = (() => {
             ctx.fillStyle = '#ffd700';
             ctx.font = 'bold 16px "Courier New", monospace';
             ctx.globalAlpha = 0.5 + Math.sin(performance.now() / 300) * 0.3;
-            ctx.fillText('FLOOR CLEARED — Find the stairs!', W/2, 30);
+            ctx.fillText('FLOOR CLEARED -- Find the stairs!', W/2, 30);
             ctx.globalAlpha = 1;
+        }
+
+        // Cutscene overlay
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) {
+            Cutscene.render(ctx, W, H);
+        }
+
+        // Minimap
+        const minimapCanvas = document.getElementById('minimapCanvas');
+        if (minimapCanvas) {
+            Dungeon.renderMinimap(minimapCanvas, currentDungeon, player.x, player.y, allies);
         }
 
         // HUD
         updateCampaignHUD();
     }
 
-    function renderCampaignMage(ctx, mage, cam, color, light) {
-        const sx = mage.x - cam.x, sy = mage.y - cam.y;
+    function renderCampaignMage(ctx, mage, cam, zoom, color, light) {
+        const screen = Dungeon.worldToScreen(mage.x, mage.y);
+        const sx = screen.x, sy = screen.y;
         if (sx < -30 || sx > 990 || sy < -30 || sy > 570) return;
 
         const flash = mage.hitFlash > 0;
         const isDashing = mage.dashing;
+        const s = zoom; // Scale factor
+
+        ctx.save();
 
         // Ghost trail when dashing
         if (isDashing) {
             ctx.globalAlpha = 0.12;
             ctx.fillStyle = color;
-            ctx.fillRect(sx - 8, sy - 16, 16, 28);
-            // Motion blur stretch
+            ctx.fillRect(sx - 8*s, sy - 16*s, 16*s, 28*s);
             ctx.globalAlpha = 0.06;
-            const stretchX = (mage.dashDirX || 0) * -20;
-            const stretchY = (mage.dashDirY || 0) * -20;
-            ctx.fillRect(sx - 6 + stretchX, sy - 12 + stretchY, 12, 24);
-            ctx.fillRect(sx - 4 + stretchX * 2, sy - 8 + stretchY * 2, 8, 16);
+            const stretchX = (mage.dashDirX || 0) * -20 * s;
+            const stretchY = (mage.dashDirY || 0) * -20 * s;
+            ctx.fillRect(sx - 6*s + stretchX, sy - 12*s + stretchY, 12*s, 24*s);
         }
 
         ctx.globalAlpha = isDashing ? 0.5 : 1;
@@ -613,44 +730,45 @@ const Campaign = (() => {
         // Shadow
         ctx.globalAlpha *= 0.3;
         ctx.fillStyle = '#000';
-        ctx.fillRect(sx - 7, sy + 9, 14, 3);
+        ctx.fillRect(sx - 7*s, sy + 9*s, 14*s, 3*s);
         ctx.globalAlpha = isDashing ? 0.5 : 1;
 
         // Body
         ctx.fillStyle = flash ? '#fff' : color;
-        ctx.fillRect(sx - 4, sy - 14, 8, 8); // head
-        ctx.fillRect(sx - 5, sy - 6, 10, 10); // body
-        ctx.fillRect(sx - 5, sy + 4, 4, 6); // legs
-        ctx.fillRect(sx + 1, sy + 4, 4, 6);
+        ctx.fillRect(sx - 4*s, sy - 14*s, 8*s, 8*s); // head
+        ctx.fillRect(sx - 5*s, sy - 6*s, 10*s, 10*s); // body
+        ctx.fillRect(sx - 5*s, sy + 4*s, 4*s, 6*s); // legs
+        ctx.fillRect(sx + 1*s, sy + 4*s, 4*s, 6*s);
 
         // Hat
         if (!flash) ctx.fillStyle = light;
-        ctx.fillRect(sx - 6, sy - 16, 12, 2);
-        ctx.fillRect(sx - 3, sy - 20, 6, 4);
-        ctx.fillRect(sx - 1, sy - 22, 2, 2);
+        ctx.fillRect(sx - 6*s, sy - 16*s, 12*s, 2*s);
+        ctx.fillRect(sx - 3*s, sy - 20*s, 6*s, 4*s);
+        ctx.fillRect(sx - 1*s, sy - 22*s, 2*s, 2*s);
 
         // Wand
         if (!flash) ctx.fillStyle = '#ffd700';
-        ctx.fillRect(sx + 5, sy - 4, 2, 12);
+        ctx.fillRect(sx + 5*s, sy - 4*s, 2*s, 12*s);
         ctx.globalAlpha = (isDashing ? 0.3 : 0.5) + Math.sin(performance.now() / 200) * 0.3;
         ctx.fillStyle = flash ? '#fff' : '#ffd700';
-        ctx.fillRect(sx + 4, sy - 6, 4, 4);
+        ctx.fillRect(sx + 4*s, sy - 6*s, 4*s, 4*s);
         ctx.globalAlpha = 1;
 
         // Eyes
         ctx.fillStyle = '#fff';
-        ctx.fillRect(sx - 2, sy - 12, 2, 2);
-        ctx.fillRect(sx + 1, sy - 12, 2, 2);
+        ctx.fillRect(sx - 2*s, sy - 12*s, 2*s, 2*s);
+        ctx.fillRect(sx + 1*s, sy - 12*s, 2*s, 2*s);
 
         // Invuln shimmer
         if (mage.invulnTimer > 0) {
             ctx.globalAlpha = 0.15 + Math.sin(performance.now() / 50) * 0.1;
             ctx.fillStyle = '#88ccff';
-            ctx.fillRect(sx - 8, sy - 16, 16, 28);
+            ctx.fillRect(sx - 8*s, sy - 16*s, 16*s, 28*s);
             ctx.globalAlpha = 1;
         }
 
         ctx.globalAlpha = 1;
+        ctx.restore();
     }
 
     function updateCampaignHUD() {
@@ -660,18 +778,18 @@ const Campaign = (() => {
         const manaText = document.getElementById('camp-mana-text');
         const dashEl = document.getElementById('camp-dash');
 
-        if (hpEl) hpEl.style.width = `${(player.hp / player.maxHp) * 100}%`;
+        if (hpEl) hpEl.style.width = ((player.hp / player.maxHp) * 100) + '%';
         if (hpText) hpText.textContent = Math.ceil(player.hp);
-        if (manaEl) manaEl.style.width = `${(player.mana / MANA_MAX) * 100}%`;
+        if (manaEl) manaEl.style.width = ((player.mana / MANA_MAX) * 100) + '%';
         if (manaText) manaText.textContent = Math.ceil(player.mana);
 
         if (dashEl) {
             if (player.dashCooldown > 0) {
-                dashEl.textContent = `DASH ${player.dashCooldown.toFixed(1)}s`;
+                dashEl.textContent = 'DASH ' + player.dashCooldown.toFixed(1) + 's';
                 dashEl.className = 'dash-cd';
             } else {
-                const chainText = player.dashChainWindow > 0 ? ` [CHAIN x${player.dashChainCount}]` : '';
-                dashEl.textContent = `DASH [SHIFT]${chainText}`;
+                const chainText = player.dashChainWindow > 0 ? ' [CHAIN x' + player.dashChainCount + ']' : '';
+                dashEl.textContent = 'DASH [SHIFT]' + chainText;
                 dashEl.className = 'dash-cd ready';
             }
         }
@@ -682,13 +800,13 @@ const Campaign = (() => {
             for (let i = 0; i < playerSpells.length; i++) {
                 const el = document.createElement('div');
                 el.className = 'spell-key-hud';
-                el.id = `camp-spell-hud-${i}`;
-                el.innerHTML = `<span class="key-num">${i + 1}</span><span>${playerSpells[i].name.substring(0, 4)}</span>`;
+                el.id = 'camp-spell-hud-' + i;
+                el.innerHTML = '<span class="key-num">' + (i + 1) + '</span><span>' + playerSpells[i].name.substring(0, 4) + '</span>';
                 keysDiv.appendChild(el);
             }
         }
         for (let i = 0; i < playerSpells.length; i++) {
-            const el = document.getElementById(`camp-spell-hud-${i}`);
+            const el = document.getElementById('camp-spell-hud-' + i);
             if (!el) continue;
             el.className = 'spell-key-hud';
             if (playerSpells[i].currentCooldown > 0) el.classList.add('on-cd');
@@ -699,20 +817,35 @@ const Campaign = (() => {
         const countEl = document.getElementById('camp-enemies');
         if (countEl) {
             const remaining = Enemies.getEnemies().length;
-            countEl.textContent = remaining > 0 ? `ENEMIES: ${remaining}` : 'CLEAR';
+            countEl.textContent = remaining > 0 ? 'ENEMIES: ' + remaining : 'CLEAR';
             countEl.style.color = remaining > 0 ? '#ff6644' : '#44cc66';
         }
     }
 
     function onKeyDown(key) {
         keys[key.toLowerCase()] = true;
+
+        // Advance cutscene
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) {
+            if (key === ' ' || key === 'Enter') {
+                Cutscene.advance();
+                return;
+            }
+        }
+
         if (key === 'Shift' || key === ' ') doDash();
         const num = parseInt(key);
         if (num >= 1 && num <= 6) castSpell(num - 1);
     }
     function onKeyUp(key) { keys[key.toLowerCase()] = false; }
     function onMouseMove(x, y) { mouse.x = x; mouse.y = y; }
-    function onMouseDown(x, y) { mouse.x = x; mouse.y = y; }
+    function onMouseDown(x, y) {
+        mouse.x = x; mouse.y = y;
+        // Advance cutscene on click
+        if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) {
+            Cutscene.advance();
+        }
+    }
     function onMouseUp() {}
 
     return {
