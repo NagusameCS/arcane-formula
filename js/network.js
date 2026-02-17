@@ -15,31 +15,73 @@ const Network = (() => {
 
     const PREFIX = 'arcform-';
 
-    // Free public TURN + STUN servers for reliable NAT traversal
-    const ICE_CONFIG = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            {
-                urls: 'turn:openrelay.metered.ca:80',
-                username: 'openrelayproject',
-                credential: 'openrelayproject',
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443',
-                username: 'openrelayproject',
-                credential: 'openrelayproject',
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                username: 'openrelayproject',
-                credential: 'openrelayproject',
-            },
-        ]
-    };
+    // ── ICE SERVER GATHERING ──
+    // We fetch temporary TURN credentials from Cloudflare (free, 1TB/month)
+    // at runtime, plus use freestun.net as static fallback.
+
+    const STUN_SERVERS = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:freestun.net:3478' },
+    ];
+
+    const STATIC_TURN = [
+        // freestun.net — free public TURN
+        { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' },
+        // Old open relay (may or may not still work)
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    ];
+
+    // Cache fetched credentials
+    let cachedICE = null;
+    let cacheTime = 0;
+    const CACHE_TTL = 3600000; // 1 hour
+
+    async function getICEConfig() {
+        if (cachedICE && Date.now() - cacheTime < CACHE_TTL) {
+            return cachedICE;
+        }
+
+        let cloudflareServers = [];
+
+        try {
+            log('Fetching Cloudflare TURN credentials...');
+            const resp = await fetch('https://speed.cloudflare.com/turn-creds');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const creds = await resp.json();
+            // creds = { urls: [...], username: "...", credential: "..." }
+            if (creds && creds.urls && creds.username) {
+                // Split into individual iceServer entries
+                const urls = Array.isArray(creds.urls) ? creds.urls : [creds.urls];
+                cloudflareServers = [{
+                    urls: urls,
+                    username: creds.username,
+                    credential: creds.credential,
+                }];
+                log('Got Cloudflare TURN: ' + urls.length + ' URLs');
+            }
+        } catch (e) {
+            log('Cloudflare TURN fetch failed: ' + e.message);
+        }
+
+        cachedICE = {
+            iceServers: [
+                ...STUN_SERVERS,
+                ...cloudflareServers,
+                ...STATIC_TURN,
+            ]
+        };
+        cacheTime = Date.now();
+
+        log('ICE config ready: ' + cachedICE.iceServers.length + ' servers (' + cloudflareServers.length + ' Cloudflare TURN)');
+        return cachedICE;
+    }
 
     function generateCode() {
         const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -52,10 +94,11 @@ const Network = (() => {
         console.log('[Network]', msg);
     }
 
-    function makePeer(id) {
+    async function makePeer(id) {
+        const iceConfig = await getICEConfig();
         const opts = {
             debug: 1,
-            config: ICE_CONFIG,
+            config: iceConfig,
         };
         return id ? new Peer(id, opts) : new Peer(opts);
     }
@@ -64,6 +107,16 @@ const Network = (() => {
         if (conn) { try { conn.close(); } catch(e) {} conn = null; }
         if (peer) { try { peer.destroy(); } catch(e) {} peer = null; }
         connected = false;
+    }
+
+    function monitorICE(pc, label) {
+        if (!pc) return;
+        pc.addEventListener('iceconnectionstatechange', () => {
+            log(label + ' ICE: ' + pc.iceConnectionState);
+        });
+        pc.addEventListener('connectionstatechange', () => {
+            log(label + ' conn-state: ' + pc.connectionState);
+        });
     }
 
     function createRoom(callbacks) {
@@ -79,9 +132,14 @@ const Network = (() => {
             let retries = 0;
             const MAX_RETRIES = 3;
 
-            function attempt(code) {
+            async function attempt(code) {
                 log('Creating room: ' + code + ' (attempt ' + (retries + 1) + ')');
-                peer = makePeer(PREFIX + code);
+                try {
+                    peer = await makePeer(PREFIX + code);
+                } catch (e) {
+                    if (!settled) { settled = true; reject(new Error('Failed to create peer: ' + e.message)); }
+                    return;
+                }
 
                 peer.on('open', (id) => {
                     if (settled) return;
@@ -94,12 +152,18 @@ const Network = (() => {
                 peer.on('connection', (c) => {
                     log('Incoming connection from opponent');
                     conn = c;
+
+                    // Monitor ICE
+                    setTimeout(() => {
+                        if (conn && conn.peerConnection) monitorICE(conn.peerConnection, 'Host');
+                    }, 200);
+
                     if (conn.open) {
                         log('Connection already open');
                         setupConnection();
                     } else {
                         conn.on('open', () => {
-                            log('Host-side connection opened');
+                            log('Host-side data channel opened');
                             setupConnection();
                         });
                     }
@@ -132,7 +196,7 @@ const Network = (() => {
                     settled = true;
                     reject(new Error('Could not reach signaling server. Check your connection.'));
                 }
-            }, 15000);
+            }, 20000);
         });
     }
 
@@ -148,55 +212,68 @@ const Network = (() => {
             let settled = false;
 
             log('Joining room: ' + roomCode);
-            peer = makePeer();
 
-            peer.on('open', (myId) => {
-                log('My peer id: ' + myId + ', connecting to ' + PREFIX + roomCode);
-                conn = peer.connect(PREFIX + roomCode, { reliable: true, serialization: 'json' });
+            (async () => {
+                try {
+                    peer = await makePeer();
+                } catch (e) {
+                    if (!settled) { settled = true; reject(new Error('Failed to create peer: ' + e.message)); }
+                    return;
+                }
 
-                conn.on('open', () => {
-                    if (settled) return;
-                    settled = true;
-                    log('Connection established!');
-                    setupConnection();
-                    resolve();
+                peer.on('open', (myId) => {
+                    log('My peer id: ' + myId + ', connecting to ' + PREFIX + roomCode);
+                    conn = peer.connect(PREFIX + roomCode, { reliable: true, serialization: 'json' });
+
+                    // Monitor ICE
+                    setTimeout(() => {
+                        if (conn && conn.peerConnection) monitorICE(conn.peerConnection, 'Client');
+                    }, 500);
+
+                    conn.on('open', () => {
+                        if (settled) return;
+                        settled = true;
+                        log('Connection established!');
+                        setupConnection();
+                        resolve();
+                    });
+
+                    conn.on('error', (err) => {
+                        log('Connection error: ' + err);
+                        if (!settled) {
+                            settled = true;
+                            reject(new Error('Failed to connect to room. Is the code correct?'));
+                        }
+                    });
                 });
 
-                conn.on('error', (err) => {
-                    log('Connection error: ' + err);
+                peer.on('error', (err) => {
+                    log('Peer error: ' + err.type + ' - ' + err.message);
                     if (!settled) {
                         settled = true;
-                        reject(new Error('Failed to connect to room. Is the code correct?'));
+                        if (err.type === 'peer-unavailable') {
+                            reject(new Error('Room "' + roomCode + '" not found. Check the code and try again.'));
+                        } else {
+                            reject(new Error(friendlyError(err)));
+                        }
                     }
                 });
-            });
 
-            peer.on('error', (err) => {
-                log('Peer error: ' + err.type + ' - ' + err.message);
-                if (!settled) {
-                    settled = true;
-                    if (err.type === 'peer-unavailable') {
-                        reject(new Error('Room "' + roomCode + '" not found. Check the code and try again.'));
-                    } else {
-                        reject(new Error(friendlyError(err)));
+                peer.on('disconnected', () => {
+                    log('Peer disconnected from signaling');
+                    if (peer && !peer.destroyed) {
+                        try { peer.reconnect(); } catch(e) {}
                     }
-                }
-            });
+                });
 
-            peer.on('disconnected', () => {
-                log('Peer disconnected from signaling');
-                if (peer && !peer.destroyed) {
-                    try { peer.reconnect(); } catch(e) {}
-                }
-            });
-
-            setTimeout(() => {
-                if (!settled) {
-                    settled = true;
-                    cleanup();
-                    reject(new Error('Connection timed out. The room may no longer exist.'));
-                }
-            }, 15000);
+                setTimeout(() => {
+                    if (!settled) {
+                        settled = true;
+                        cleanup();
+                        reject(new Error('Connection timed out. Try again — if it keeps failing, one of you may be behind a strict firewall.'));
+                    }
+                }, 20000);
+            })();
         });
     }
 
