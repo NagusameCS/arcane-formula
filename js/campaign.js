@@ -639,7 +639,11 @@ const Campaign = (() => {
 
         const cast = ArconSystem.castSpell(spell, player,
             { id: 'target', x: closestEnemy.x, y: closestEnemy.y },
-            world.x, world.y
+            world.x, world.y, {
+                hp: player.hp, maxHp: player.maxHp, mana: player.mana,
+                maxMana: getMaxMana(), speed: player.speed, level: playerLevel,
+                combo: 0, kills: 0, floor: currentFloor,
+            }
         );
         playerCasts.push(cast);
 

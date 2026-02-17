@@ -269,7 +269,10 @@ const Battle = (() => {
         spell.currentCooldown = spell.cooldown;
 
         const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
-        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y);
+        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y, {
+            hp: player.hp, maxHp: HP_MAX, mana: player.mana, maxMana: MANA_MAX,
+            speed: player.speed, level: 1, combo: 0, kills: 0, floor: 0,
+        });
         playerCasts.push(cast);
         if (typeof Audio !== 'undefined') Audio.cast();
 
@@ -449,7 +452,10 @@ const Battle = (() => {
         spell.currentCooldown = spell.cooldown;
 
         const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
-        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y);
+        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y, {
+            hp: player.hp, maxHp: HP_MAX, mana: player.mana, maxMana: MANA_MAX,
+            speed: player.speed, level: 1, combo: 0, kills: 0, floor: 0,
+        });
         playerCasts.push(cast);
         if (typeof Audio !== 'undefined') Audio.cast();
 

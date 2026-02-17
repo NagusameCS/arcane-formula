@@ -349,7 +349,7 @@ const Enemies = (() => {
                     break;
 
                 case 'boss':
-                    updateBoss(e, target, dt, dungeon);
+                    updateBoss(e, target, dt, dungeon, closestDist);
                     break;
             }
 
@@ -447,12 +447,17 @@ const Enemies = (() => {
             const found = lib.find(s => s.name === name);
             if (found) {
                 try {
+                    const xE = found.xExpr || (found.x ? Blocks.toExpr(found.x) : null);
+                    const yE = found.yExpr || (found.y ? Blocks.toExpr(found.y) : null);
+                    const emE = found.emitExpr || (found.emit ? Blocks.toExpr(found.emit) : 'i*0.02');
+                    const wE = found.widthExpr || (found.width ? Blocks.toExpr(found.width) : '4');
+                    if (!xE || !yE) continue;
                     bossSpellCache[name] = {
                         cost: found.cost,
-                        xFn: Parser.compile(found.xExpr),
-                        yFn: Parser.compile(found.yExpr),
-                        emitDelayFn: Parser.compile(found.emitExpr),
-                        widthFn: Parser.compile(found.widthExpr || '4'),
+                        xFn: Parser.compile(xE),
+                        yFn: Parser.compile(yE),
+                        emitDelayFn: Parser.compile(emE),
+                        widthFn: Parser.compile(wE),
                     };
                 } catch(e) {}
             }
@@ -476,10 +481,11 @@ const Enemies = (() => {
         } catch(e) {}
     }
 
-    function updateBoss(e, target, dt, dungeon) {
+    function updateBoss(e, target, dt, dungeon, closestDist) {
         const dx = target.x - e.x, dy = target.y - e.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
         const ndx = dx / dist, ndy = dy / dist;
+        if (closestDist === undefined) closestDist = dist;
 
         // Phase transitions
         const hpPct = e.hp / e.maxHp;
