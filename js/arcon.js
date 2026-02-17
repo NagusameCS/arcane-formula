@@ -35,7 +35,7 @@ const ArconSystem = (() => {
         return x < -50 || x > 1010 || y < -50 || y > 590;
     }
 
-    function castSpell(spell, caster, target, cursorX, cursorY) {
+    function castSpell(spell, caster, target, cursorX, cursorY, extraVars) {
         const N = spell.cost;
         const aim = Math.atan2(cursorY - caster.y, cursorX - caster.x);
         const dist = Math.sqrt((cursorX - caster.x) ** 2 + (cursorY - caster.y) ** 2);
@@ -50,12 +50,32 @@ const ArconSystem = (() => {
             targetY = caster.y + Math.sin(tAngle) * MAX_TARGET_RANGE;
         }
 
+        // Extended variable context — the loophole system
+        const ev = extraVars || {};
         const castVars = {
             'player.x': caster.x, 'player.y': caster.y,
             'cursor.x': cursorX, 'cursor.y': cursorY,
             'enemy.x': targetX, 'enemy.y': targetY,
             'map.w': 960, 'map.h': 540,
             N, aim, dist, 'pi': Math.PI,
+            // ── LOOPHOLE VARIABLES ──
+            'hp': ev.hp || 100,
+            'maxHp': ev.maxHp || 100,
+            'mana': ev.mana || 100,
+            'maxMana': ev.maxMana || 100,
+            'speed': ev.speed || 200,
+            'arcons': countActive(caster.id || 'player'),
+            'gameTime': ev.gameTime || 0,
+            'dt': ev.dt || 0.016,
+            'combo': ev.combo || 1,
+            'kills': ev.kills || 0,
+            'floor': ev.floor || 1,
+            'level': ev.level || 1,
+            'dx': Math.cos(aim),
+            'dy': Math.sin(aim),
+            'vel': ev.vel || 0,
+            'phase': ev.phase || 0,
+            'entropy': Math.random(),
         };
 
         const pendingArcons = [];
