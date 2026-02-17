@@ -30,22 +30,28 @@
         </div>
     </div>
 
-    <!-- SPELLBOOK CAROUSEL -->
+    <!-- SPELLBOOK -->
     <div id="spellbook-ui" class="hidden overlay">
         <div class="spellbook-wrap">
-            <!-- carousel nav -->
-            <div class="carousel-header">
-                <button id="prevSpell" class="carousel-arrow">&larr;</button>
-                <div class="carousel-dots" id="carouselDots"></div>
-                <button id="nextSpell" class="carousel-arrow">&rarr;</button>
+            <!-- Top bar: spell tabs + status -->
+            <div class="spellbook-topbar">
+                <div class="spell-tabs" id="spellTabs"></div>
             </div>
 
-            <!-- carousel cards -->
-            <div class="carousel-viewport">
-                <div class="carousel-track" id="carouselTrack"></div>
+            <!-- Main area: editor + palette -->
+            <div class="spellbook-main">
+                <!-- Left: spell editor -->
+                <div class="spell-editor-panel" id="spellEditorPanel">
+                    <!-- Populated by JS -->
+                </div>
+                <!-- Right: block palette -->
+                <div class="palette-panel">
+                    <div class="palette-title">BLOCKS</div>
+                    <div class="palette-scroll" id="blockPalette"></div>
+                </div>
             </div>
 
-            <!-- bottom -->
+            <!-- Bottom -->
             <div class="spellbook-bottom">
                 <div id="readyStatus" class="ready-status"></div>
                 <button id="readyBtn" class="btn-gold btn-ready">READY</button>

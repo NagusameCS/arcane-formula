@@ -1,100 +1,66 @@
 // ─────────────────────────────────────────────
-//  SPELLBOOK — Carousel with Block Editors
+//  SPELLBOOK — Tabbed Editor with Side Palette
 // ─────────────────────────────────────────────
 
 const Spellbook = (() => {
-    let spells = []; // { name, cost, editors:{x,y,emit,width} }
-    let currentSlot = 0;
+    let spells = [];
+    let currentSpell = 0;
+    let currentFormula = 'x'; // 'x','y','emit','width'
     let ready = false;
     let onReadyCallback = null;
+
+    // Each spell has 4 block editor instances
+    // But we only show one at a time (via formula tabs)
+    let editors = {}; // editors[spellIdx][formulaProp] = editor instance
+
+    const FORMULA_KEYS = [
+        { prop: 'x', label: 'X(i,t)', desc: 'Horizontal position' },
+        { prop: 'y', label: 'Y(i,t)', desc: 'Vertical position' },
+        { prop: 'emit', label: 'EMIT(i)', desc: 'Emit delay' },
+        { prop: 'width', label: 'SIZE', desc: 'Arcon size' },
+    ];
 
     function init(onReady) {
         onReadyCallback = onReady;
         ready = false;
         spells = [];
-        currentSlot = 0;
+        editors = {};
+        currentSpell = 0;
+        currentFormula = 'x';
 
         for (let i = 0; i < 6; i++) {
             const def = Blocks.DEFAULTS[i];
             spells.push({
                 name: def.name,
                 cost: def.cost,
-                trees: { x: Blocks.cloneNode(def.x), y: Blocks.cloneNode(def.y), emit: Blocks.cloneNode(def.emit), width: Blocks.cloneNode(def.width) },
-                editors: {},
+                trees: {
+                    x: Blocks.cloneNode(def.x),
+                    y: Blocks.cloneNode(def.y),
+                    emit: Blocks.cloneNode(def.emit),
+                    width: Blocks.cloneNode(def.width),
+                },
             });
+            editors[i] = {};
         }
     }
 
     function buildUI() {
-        const track = document.getElementById('carouselTrack');
-        track.innerHTML = '';
-        const dots = document.getElementById('carouselDots');
-        dots.innerHTML = '';
-
+        // Build spell tabs
+        const tabsEl = document.getElementById('spellTabs');
+        tabsEl.innerHTML = '';
         for (let i = 0; i < 6; i++) {
-            const spell = spells[i];
-
-            // Dot
-            const dot = document.createElement('div');
-            dot.className = 'carousel-dot' + (i === currentSlot ? ' active' : '');
-            dot.addEventListener('click', () => goTo(i));
-            dots.appendChild(dot);
-
-            // Card
-            const card = document.createElement('div');
-            card.className = 'spell-card';
-            card.id = `spell-card-${i}`;
-
-            // Header row
-            const top = document.createElement('div');
-            top.className = 'card-top';
-            top.innerHTML = `
-                <div class="card-key">${i + 1}</div>
-                <input class="card-name" value="${spell.name}" data-idx="${i}" placeholder="Spell Name">
-                <div class="card-cost"><span>N =</span><input type="number" value="${spell.cost}" min="1" max="100" data-idx="${i}" class="cost-input"><span>arcons</span></div>
-            `;
-            card.appendChild(top);
-
-            // Block editors for each formula
-            const editorArea = document.createElement('div');
-            editorArea.className = 'block-editor-area';
-
-            const formulas = [
-                { key: 'x(i,t)', tree: spell.trees.x, prop: 'x' },
-                { key: 'y(i,t)', tree: spell.trees.y, prop: 'y' },
-                { key: 'emit_delay(i)', tree: spell.trees.emit, prop: 'emit' },
-                { key: 'width', tree: spell.trees.width, prop: 'width' },
-            ];
-
-            for (const f of formulas) {
-                const editorContainer = document.createElement('div');
-                editorContainer.style.marginBottom = '4px';
-                const editor = Blocks.createEditor(editorContainer, f.key, f.tree, (newRoot) => {
-                    spell.trees[f.prop] = newRoot;
-                });
-                spell.editors[f.prop] = editor;
-                editorArea.appendChild(editorContainer);
-            }
-
-            card.appendChild(editorArea);
-            track.appendChild(card);
+            const tab = document.createElement('button');
+            tab.className = 'spell-tab' + (i === currentSpell ? ' active' : '');
+            tab.innerHTML = `<span class="tab-num">${i + 1}</span><span class="tab-name">${spells[i].name}</span>`;
+            tab.addEventListener('click', () => switchSpell(i));
+            tabsEl.appendChild(tab);
         }
 
-        // Event listeners for name/cost inputs
-        track.querySelectorAll('.card-name').forEach(inp => {
-            inp.addEventListener('input', (e) => {
-                spells[parseInt(e.target.dataset.idx)].name = e.target.value;
-            });
-        });
-        track.querySelectorAll('.cost-input').forEach(inp => {
-            inp.addEventListener('input', (e) => {
-                spells[parseInt(e.target.dataset.idx)].cost = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
-            });
-        });
+        // Build palette (shared across all spells)
+        buildPalette();
 
-        // Carousel arrows
-        document.getElementById('prevSpell').onclick = () => goTo(currentSlot - 1);
-        document.getElementById('nextSpell').onclick = () => goTo(currentSlot + 1);
+        // Build the editor for current spell
+        buildEditorPanel();
 
         // Ready button
         document.getElementById('readyBtn').onclick = () => {
@@ -103,19 +69,196 @@ const Spellbook = (() => {
             document.getElementById('readyBtn').style.opacity = '0.5';
             if (onReadyCallback) onReadyCallback(compileSpells());
         };
-
-        goTo(0);
     }
 
-    function goTo(idx) {
-        currentSlot = Math.max(0, Math.min(5, idx));
-        const track = document.getElementById('carouselTrack');
-        track.style.transform = `translateX(-${currentSlot * 100}%)`;
+    function buildPalette() {
+        const paletteEl = document.getElementById('blockPalette');
+        paletteEl.innerHTML = '';
 
-        // Update dots
-        document.querySelectorAll('.carousel-dot').forEach((d, i) => {
-            d.classList.toggle('active', i === currentSlot);
+        const categories = [
+            {
+                label: 'Numbers',
+                cls: 'block-num',
+                items: Blocks.PALETTE.numbers,
+                fmt: (item) => String(item.value),
+            },
+            {
+                label: 'Variables',
+                cls: 'block-var',
+                items: Blocks.PALETTE.variables,
+                fmt: (item) => item.name,
+            },
+            {
+                label: 'Operators',
+                cls: 'block-op',
+                items: Blocks.PALETTE.operators,
+                fmt: (item) => `□ ${item.op} □`,
+            },
+            {
+                label: 'Functions',
+                cls: 'block-func',
+                items: Blocks.PALETTE.functions,
+                fmt: (item) => item.name + '(' + item.args.map(() => '□').join(', ') + ')',
+            },
+        ];
+
+        for (const cat of categories) {
+            const section = document.createElement('div');
+            section.className = 'palette-category';
+
+            const label = document.createElement('div');
+            label.className = 'palette-cat-label';
+            label.textContent = cat.label;
+            section.appendChild(label);
+
+            const items = document.createElement('div');
+            items.className = 'palette-cat-items';
+
+            for (const item of cat.items) {
+                const el = document.createElement('span');
+                el.className = 'block ' + cat.cls;
+                el.textContent = cat.fmt(item);
+                el.addEventListener('click', () => {
+                    const editor = getCurrentEditor();
+                    if (editor) editor.insertBlock(Blocks.cloneNode(item));
+                });
+                items.appendChild(el);
+            }
+            section.appendChild(items);
+            paletteEl.appendChild(section);
+        }
+    }
+
+    function buildEditorPanel() {
+        const panel = document.getElementById('spellEditorPanel');
+        panel.innerHTML = '';
+        const spell = spells[currentSpell];
+
+        // Header: name + cost
+        const header = document.createElement('div');
+        header.className = 'spell-header';
+        header.innerHTML = `
+            <div class="card-key">${currentSpell + 1}</div>
+            <input class="card-name" value="${spell.name}" placeholder="Spell Name" id="currentSpellName">
+            <div class="card-cost">
+                <span>N =</span>
+                <input type="number" value="${spell.cost}" min="1" max="100" id="currentSpellCost">
+                <span>arcons</span>
+            </div>
+        `;
+        panel.appendChild(header);
+
+        // Name/cost listeners
+        header.querySelector('#currentSpellName').addEventListener('input', (e) => {
+            spell.name = e.target.value;
+            updateSpellTab(currentSpell);
         });
+        header.querySelector('#currentSpellCost').addEventListener('input', (e) => {
+            spell.cost = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
+        });
+
+        // Formula tabs
+        const formulaTabs = document.createElement('div');
+        formulaTabs.className = 'formula-tabs';
+        for (const fk of FORMULA_KEYS) {
+            const tab = document.createElement('button');
+            tab.className = 'formula-tab' + (fk.prop === currentFormula ? ' active' : '');
+            tab.textContent = fk.label;
+            tab.title = fk.desc;
+            tab.addEventListener('click', () => switchFormula(fk.prop));
+            formulaTabs.appendChild(tab);
+        }
+        panel.appendChild(formulaTabs);
+
+        // LaTeX preview
+        const latexEl = document.createElement('div');
+        latexEl.className = 'latex-preview';
+        latexEl.id = 'latexPreview';
+        panel.appendChild(latexEl);
+
+        // Block workspace
+        const workspace = document.createElement('div');
+        workspace.className = 'block-workspace';
+        workspace.id = 'blockWorkspace';
+        panel.appendChild(workspace);
+
+        // Toolbar
+        const toolbar = document.createElement('div');
+        toolbar.className = 'workspace-toolbar';
+
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'ws-btn danger';
+        clearBtn.textContent = 'CLEAR';
+        clearBtn.addEventListener('click', () => {
+            const editor = getCurrentEditor();
+            if (editor) {
+                spell.trees[currentFormula] = null;
+                editor.setRoot(null);
+            }
+        });
+        toolbar.appendChild(clearBtn);
+
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'ws-btn';
+        resetBtn.textContent = 'RESET TO DEFAULT';
+        resetBtn.addEventListener('click', () => {
+            const def = Blocks.DEFAULTS[currentSpell];
+            const defaultTree = def[currentFormula];
+            if (defaultTree) {
+                const clone = Blocks.cloneNode(defaultTree);
+                spell.trees[currentFormula] = clone;
+                const editor = getCurrentEditor();
+                if (editor) editor.setRoot(clone);
+            }
+        });
+        toolbar.appendChild(resetBtn);
+
+        panel.appendChild(toolbar);
+
+        // Initialize/re-initialize the block editor for this formula
+        initEditor(currentSpell, currentFormula);
+    }
+
+    function initEditor(spellIdx, formulaProp) {
+        const spell = spells[spellIdx];
+        const workspace = document.getElementById('blockWorkspace');
+        const latexEl = document.getElementById('latexPreview');
+
+        // Create a new editor instance bound to the workspace
+        const editor = Blocks.createEditorInPlace(workspace, latexEl, spell.trees[formulaProp], (newRoot) => {
+            spell.trees[formulaProp] = newRoot;
+        });
+
+        editors[spellIdx][formulaProp] = editor;
+    }
+
+    function getCurrentEditor() {
+        if (editors[currentSpell] && editors[currentSpell][currentFormula]) {
+            return editors[currentSpell][currentFormula];
+        }
+        return null;
+    }
+
+    function switchSpell(idx) {
+        currentSpell = idx;
+        // Update spell tabs
+        document.querySelectorAll('.spell-tab').forEach((t, i) => {
+            t.classList.toggle('active', i === idx);
+        });
+        buildEditorPanel();
+    }
+
+    function switchFormula(prop) {
+        currentFormula = prop;
+        buildEditorPanel();
+    }
+
+    function updateSpellTab(idx) {
+        const tabs = document.querySelectorAll('.spell-tab');
+        if (tabs[idx]) {
+            const nameEl = tabs[idx].querySelector('.tab-name');
+            if (nameEl) nameEl.textContent = spells[idx].name || 'Unnamed';
+        }
     }
 
     function compileSpells() {
@@ -134,12 +277,11 @@ const Spellbook = (() => {
                     yFn: Parser.compile(yExpr),
                     emitDelayFn: Parser.compile(emitExpr),
                     widthFn: Parser.compile(widthExpr),
-                    xExpr, yExpr, emitExpr, widthExpr, // for network sync
+                    xExpr, yExpr, emitExpr, widthExpr,
                     cooldown: Math.max(0.5, spell.cost * 0.03),
                     currentCooldown: 0,
                 });
             } catch (e) {
-                // Fallback bolt
                 compiled.push({
                     name: spell.name || 'ERROR',
                     cost: spell.cost,
@@ -147,6 +289,10 @@ const Spellbook = (() => {
                     yFn: Parser.compile('player.y + sin(aim) * 200 * t'),
                     emitDelayFn: Parser.compile('i * 0.02'),
                     widthFn: Parser.compile('4'),
+                    xExpr: 'player.x + cos(aim) * 200 * t',
+                    yExpr: 'player.y + sin(aim) * 200 * t',
+                    emitExpr: 'i * 0.02',
+                    widthExpr: '4',
                     cooldown: 1, currentCooldown: 0,
                 });
             }

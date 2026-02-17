@@ -94,7 +94,15 @@ const Network = (() => {
                 peer.on('connection', (c) => {
                     log('Incoming connection from opponent');
                     conn = c;
-                    setupConnection();
+                    if (conn.open) {
+                        log('Connection already open');
+                        setupConnection();
+                    } else {
+                        conn.on('open', () => {
+                            log('Host-side connection opened');
+                            setupConnection();
+                        });
+                    }
                 });
 
                 peer.on('error', (err) => {
