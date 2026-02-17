@@ -664,5 +664,74 @@ const SpellLibrary = (() => {
     function getByCategory(cat) { return SPELLS.filter(s => s.category === cat); }
     function getCategories() { return CATEGORIES; }
 
-    return { getAll, getByCategory, getCategories, SPELLS, CATEGORIES };
+    // ═══════════════════════════════════════
+    //  TOMES — Recommended Spell Loadouts
+    // ═══════════════════════════════════════
+    const TOMES = [
+        {
+            name: 'Healer',
+            desc: 'Sustain through anything. Self Lance heals on pass-through, backed by the strongest offense.',
+            spells: ['Self Lance', 'Healing Nova', 'Life Spiral', 'Supernova', 'Railgun', 'Gatling'],
+        },
+        {
+            name: 'Glass Cannon',
+            desc: 'Maximum damage output. No defense, all offense — melt bosses fast or die trying.',
+            spells: ['Railgun', 'Gatling', 'Supernova', 'Shotgun', 'Beam', 'Fireball'],
+        },
+        {
+            name: 'Tank',
+            desc: 'Defensive walls and barriers with counter-attack capability.',
+            spells: ['Wall', 'Dome', 'Aegis', 'Thorns', 'Repulse', 'Self Lance'],
+        },
+        {
+            name: 'Chaos Mage',
+            desc: 'Unpredictable devastation. Fills the screen with arcons.',
+            spells: ['Storm', 'Eruption', 'Swarm', 'Galaxy', 'Supernova', 'Collapse'],
+        },
+        {
+            name: 'Sniper',
+            desc: 'Precise long-range elimination. Low cost, high efficiency.',
+            spells: ['Railgun', 'Sniper', 'Lance', 'Beam', 'Seeker', 'Icicle'],
+        },
+        {
+            name: 'Bouncer',
+            desc: 'All bounce spells — ricochets fill corridors and shred groups.',
+            spells: ['Bouncing Bolt', 'Ricochet Storm', 'Ricochet', 'Flak', 'Scatter', 'Storm'],
+        },
+        {
+            name: 'Piston Master',
+            desc: 'Keep enemies at bay. Knockback everything into walls.',
+            spells: ['Piston Beam', 'Piston Nova', 'Piston Shotgun', 'Repulse', 'Wall', 'Shotgun'],
+        },
+        {
+            name: 'Gambler',
+            desc: 'Feeling lucky? Random outcomes with massive upside potential.',
+            spells: ['Coin Flip', 'Dice Roll', 'Jackpot', 'Roulette', 'Wild Card', 'Lucky Seven'],
+        },
+        {
+            name: 'Balanced',
+            desc: 'A well-rounded loadout for any situation. Good for beginners.',
+            spells: ['Beam', 'Shotgun', 'Wall', 'Nova', 'Seeker', 'Self Lance'],
+        },
+        {
+            name: 'Trapper',
+            desc: 'Control the battlefield. Mines, traps, and area denial.',
+            spells: ['Trap', 'Minefield', 'Sentry', 'Thorns', 'Vortex', 'Dome'],
+        },
+        {
+            name: 'Speedster',
+            desc: 'Low-cost rapid-fire spells for constant pressure.',
+            spells: ['Railgun', 'Blink', 'Icicle', 'Lance', 'Wild Card', 'Sniper'],
+        },
+        {
+            name: 'Boss Slayer',
+            desc: 'Optimized for boss fights. High burst + sustain healing.',
+            spells: ['Supernova', 'Gatling', 'Self Lance', 'Healing Nova', 'Piston Nova', 'Railgun'],
+        },
+    ];
+
+    function getTomes() { return TOMES; }
+    function getTomeByName(name) { return TOMES.find(t => t.name === name); }
+
+    return { getAll, getByCategory, getCategories, getTomes, getTomeByName, SPELLS, CATEGORIES, TOMES };
 })();

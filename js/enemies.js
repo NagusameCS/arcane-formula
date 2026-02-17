@@ -103,22 +103,61 @@ const Enemies = (() => {
         }
     }
 
-    // Random spells for non-boss enemies (half player mana cost equivalent)
+    // ── MOB MAGIC SPELLS ── Uses player.x/player.y = caster, enemy.x/enemy.y = target
     const MOB_SPELL_EXPRS = [
-        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx))*250*(t-i*0.03)', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx))*250*(t-i*0.03)', emitExpr: 'i*0.03', widthExpr: '3', name: 'bolt' },
-        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx)+sin(t*3)*0.3)*180*t', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx)+sin(t*3)*0.3)*180*t', emitExpr: 'i*0.04', widthExpr: '4', name: 'wave' },
-        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx)+i*0.4)*140*t', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx)+i*0.4)*140*t', emitExpr: 'i*0.05', widthExpr: '3', name: 'scatter' },
+        // BOLT: straight shot at target
+        { xExpr: 'player.x+cos(aim)*250*(t-i*0.03)', yExpr: 'player.y+sin(aim)*250*(t-i*0.03)', emitExpr: 'i*0.03', widthExpr: '3', name: 'bolt', cost: 12 },
+        // WAVE: wavy shot toward target
+        { xExpr: 'player.x+cos(aim+sin(t*3)*0.3)*180*t', yExpr: 'player.y+sin(aim+sin(t*3)*0.3)*180*t', emitExpr: 'i*0.04', widthExpr: '4', name: 'wave', cost: 15 },
+        // SCATTER: fan of arcons
+        { xExpr: 'player.x+cos(aim+(i-N/2)*0.15)*200*t', yExpr: 'player.y+sin(aim+(i-N/2)*0.15)*200*t', emitExpr: 'i*0.02', widthExpr: '3', name: 'scatter', cost: 18 },
+        // SPIRAL: spiraling shot
+        { xExpr: 'player.x+cos(aim+t*4+i*0.3)*120*t', yExpr: 'player.y+sin(aim+t*4+i*0.3)*120*t', emitExpr: 'i*0.04', widthExpr: '3', name: 'spiral', cost: 15 },
+        // RING: expanding ring of arcons
+        { xExpr: 'player.x+cos(i/N*2*pi)*150*t', yExpr: 'player.y+sin(i/N*2*pi)*150*t', emitExpr: '0', widthExpr: '4', name: 'ring', cost: 20 },
+        // LANCE: directed lance toward target
+        { xExpr: 'player.x+cos(aim)*300*(t-i*0.01)', yExpr: 'player.y+sin(aim)*300*(t-i*0.01)', emitExpr: 'i*0.01', widthExpr: '5', name: 'lance', cost: 10 },
+        // NOVA: radial burst that expands outward
+        { xExpr: 'player.x+cos(i/N*2*pi+t*2)*80*(1+t*2)', yExpr: 'player.y+sin(i/N*2*pi+t*2)*80*(1+t*2)', emitExpr: '0', widthExpr: '3', name: 'nova', cost: 22 },
+        // COMET: fast single arcon barrage
+        { xExpr: 'player.x+cos(aim+sin(i)*0.05)*350*(t-i*0.05)', yExpr: 'player.y+sin(aim+sin(i)*0.05)*350*(t-i*0.05)', emitExpr: 'i*0.05', widthExpr: '4', name: 'comet', cost: 14 },
+        // ZIGZAG: zig-zagging projectile
+        { xExpr: 'player.x+cos(aim)*200*t+sin(t*8)*20', yExpr: 'player.y+sin(aim)*200*t+cos(t*8)*20', emitExpr: 'i*0.03', widthExpr: '3', name: 'zigzag', cost: 14 },
+        // MORTAR: arcing lobbed shot
+        { xExpr: 'lerp(player.x,enemy.x,t*0.8)+sin(t*pi)*40', yExpr: 'lerp(player.y,enemy.y,t*0.8)-sin(t*pi)*60', emitExpr: 'i*0.03', widthExpr: '5', name: 'mortar', cost: 16 },
+        // CHAIN: rapid chain hits
+        { xExpr: 'lerp(player.x,enemy.x,min(1,t*2-i*0.1))', yExpr: 'lerp(player.y,enemy.y,min(1,t*2-i*0.1))+sin(t*6)*10', emitExpr: 'i*0.08', widthExpr: '3', name: 'chain', cost: 16 },
+        // SHURIKEN: spinning outward
+        { xExpr: 'player.x+cos(aim+i/N*2*pi)*160*t', yExpr: 'player.y+sin(aim+i/N*2*pi)*160*t', emitExpr: '0', widthExpr: '3', name: 'shuriken', cost: 18 },
     ];
+
+    // Behavior-specific spell affinities — some behaviors favor certain spells
+    const BEHAVIOR_SPELL_MAP = {
+        'chase': ['bolt', 'lance', 'comet', 'zigzag'],
+        'patrol': ['wave', 'scatter', 'mortar'],
+        'guard': ['ring', 'nova', 'scatter'],
+        'strafe': ['bolt', 'zigzag', 'shuriken', 'chain'],
+        'lunge': ['lance', 'comet', 'bolt'],
+        'turret': ['scatter', 'ring', 'nova', 'mortar', 'spiral'],
+        'teleport': ['nova', 'ring', 'shuriken'],
+        'dodge': ['bolt', 'zigzag', 'chain', 'comet'],
+        'summon': ['spiral', 'wave', 'mortar'],
+        'charge': ['lance', 'bolt', 'comet'],
+        'healer': ['wave', 'spiral', 'ring'],
+    };
 
     function createEnemy(name, stats, tileX, tileY, isBoss) {
         uidCounter++;
-        // Assign a random spell to non-boss enemies
+        // Assign a behavior-appropriate spell to ALL non-boss enemies
         let mobSpell = null;
         if (!isBoss && stats.behavior !== 'boss') {
-            const spellT = MOB_SPELL_EXPRS[Math.floor(seededRandom() * MOB_SPELL_EXPRS.length)];
+            // Pick a spell based on behavior affinity
+            const affinity = BEHAVIOR_SPELL_MAP[stats.behavior] || ['bolt', 'wave', 'scatter'];
+            const affinityName = affinity[Math.floor(seededRandom() * affinity.length)];
+            const spellT = MOB_SPELL_EXPRS.find(s => s.name === affinityName) || MOB_SPELL_EXPRS[0];
             try {
                 mobSpell = {
-                    cost: 50, // half of 100 mana
+                    cost: spellT.cost || 12,
                     xFn: Parser.compile(spellT.xExpr),
                     yFn: Parser.compile(spellT.yExpr),
                     emitDelayFn: Parser.compile(spellT.emitExpr),
@@ -157,8 +196,9 @@ const Enemies = (() => {
             tauntTimer: 0,
             // Mob spell (non-boss only)
             spell: mobSpell,
-            mana: isBoss ? 0 : 50,
-            spellCd: 4 + seededRandom() * 5,
+            mana: isBoss ? 0 : 30,
+            maxMana: isBoss ? 0 : 30,
+            spellCd: 2 + seededRandom() * 3,
             // Animation state
             animTimer: 0,
             animFrame: 0,
@@ -439,19 +479,31 @@ const Enemies = (() => {
                     break;
             }
 
-            // ── Mob spell casting (non-boss enemies with spells) ──
+            // ── Mob spell casting (ALL non-boss enemies with spells) ──
             if (!e.isBoss && e.spell && e.aggro && target) {
                 if (e.spellCd !== undefined) e.spellCd -= dt;
-                e.mana = Math.min(50, (e.mana || 0) + dt * 2); // slow mana regen
-                if (e.spellCd <= 0 && e.mana >= e.spell.cost && closestDist < 200) {
+                const maxM = e.maxMana || 30;
+                e.mana = Math.min(maxM, (e.mana || 0) + dt * 5); // faster mana regen
+                if (e.spellCd <= 0 && e.mana >= e.spell.cost && closestDist < 250) {
                     e.mana -= e.spell.cost;
-                    e.spellCd = 5 + Math.random() * 4;
+                    e.spellCd = 2.5 + Math.random() * 2.5;
+                    e.animState = 'attack'; // show attack animation when casting
                     try {
                         const cast = ArconSystem.castSpell(e.spell,
                             { id: 'enemy_' + e.uid, x: e.x, y: e.y },
                             target, target.x, target.y);
                         // Store enemy casts in effects so they render
                         if (cast) effects.push({ type: 'spell-cast', cast: cast });
+                        // Casting flash particles
+                        if (effects.length < 200) {
+                            for (let cp = 0; cp < 4; cp++) {
+                                effects.push({
+                                    type: 'projectile', x: e.x, y: e.y - e.size * 0.3,
+                                    vx: (Math.random() - 0.5) * 40, vy: -Math.random() * 30 - 10,
+                                    dmg: 0, life: 0.3, color: e.color, size: 2, owner: 'none',
+                                });
+                            }
+                        }
                     } catch(err) {}
                 }
             }
@@ -553,6 +605,13 @@ const Enemies = (() => {
                         if (typeof Audio !== 'undefined') Audio.playerHurt();
                         break;
                     }
+                }
+            } else if (fx.type === 'spell-cast') {
+                // Enemy spell casts — advance through ArconSystem
+                if (fx.cast && fx.cast.active) {
+                    ArconSystem.updateCast(fx.cast, dt);
+                } else {
+                    effects.splice(i, 1);
                 }
             } else if (fx.type === 'shake') {
                 fx.duration -= dt;

@@ -443,8 +443,114 @@ const Spellbook = (() => {
 
         const header = document.createElement('div');
         header.className = 'library-header';
-        header.innerHTML = '<h3>SPELL LIBRARY</h3><p>Drag a spell to a slot tab above to equip it</p>';
+        header.innerHTML = '<h3>SPELL LIBRARY</h3><p>Click a spell to equip it, or equip an entire tome</p>';
         libPanel.appendChild(header);
+
+        // ═══════════════════════════════════
+        //  TOMES SECTION
+        // ═══════════════════════════════════
+        const tomeSection = document.createElement('div');
+        tomeSection.className = 'library-category';
+        const tomeLabel = document.createElement('div');
+        tomeLabel.className = 'library-cat-label';
+        tomeLabel.textContent = '📖 TOMES — RECOMMENDED BUILDS';
+        tomeLabel.style.cssText = 'font-size:13px;color:#ffcc44;';
+        tomeSection.appendChild(tomeLabel);
+
+        const tomeGrid = document.createElement('div');
+        tomeGrid.className = 'library-grid';
+        tomeGrid.style.cssText = 'grid-template-columns:repeat(auto-fill,minmax(180px,1fr));';
+
+        // Pre-built tomes
+        if (SpellLibrary.getTomes) {
+            for (const tome of SpellLibrary.getTomes()) {
+                const card = document.createElement('div');
+                card.className = 'library-card tome-card';
+                card.style.cssText = 'border:1px solid #ffcc44;background:#1a1500;cursor:pointer;padding:8px;';
+
+                const nameEl = document.createElement('div');
+                nameEl.className = 'library-card-name';
+                nameEl.style.cssText = 'color:#ffcc44;font-size:12px;font-weight:bold;';
+                nameEl.textContent = '📖 ' + tome.name;
+                card.appendChild(nameEl);
+
+                const descEl = document.createElement('div');
+                descEl.className = 'library-card-desc';
+                descEl.textContent = tome.desc;
+                descEl.style.cssText = 'color:#999;font-size:10px;margin:3px 0;';
+                card.appendChild(descEl);
+
+                const spellList = document.createElement('div');
+                spellList.style.cssText = 'font-size:9px;color:#aaa;margin-top:4px;';
+                spellList.textContent = tome.spells.join(' • ');
+                card.appendChild(spellList);
+
+                card.addEventListener('click', () => equipTome(tome));
+                tomeGrid.appendChild(card);
+            }
+        }
+
+        // Custom saved tomes
+        const customTomes = loadCustomTomes();
+        for (const ct of customTomes) {
+            const card = document.createElement('div');
+            card.className = 'library-card tome-card';
+            card.style.cssText = 'border:1px solid #44aaff;background:#001520;cursor:pointer;padding:8px;position:relative;';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'library-card-name';
+            nameEl.style.cssText = 'color:#44aaff;font-size:12px;font-weight:bold;';
+            nameEl.textContent = '📘 ' + ct.name;
+            card.appendChild(nameEl);
+
+            const spellList = document.createElement('div');
+            spellList.style.cssText = 'font-size:9px;color:#aaa;margin-top:4px;';
+            spellList.textContent = ct.spellNames.join(' • ');
+            card.appendChild(spellList);
+
+            // Delete button
+            const delBtn = document.createElement('span');
+            delBtn.textContent = '✕';
+            delBtn.style.cssText = 'position:absolute;top:4px;right:6px;color:#ff4444;cursor:pointer;font-size:12px;';
+            delBtn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                deleteCustomTome(ct.name);
+                buildLibraryPanel();
+            });
+            card.appendChild(delBtn);
+
+            card.addEventListener('click', () => equipCustomTome(ct));
+            tomeGrid.appendChild(card);
+        }
+
+        tomeSection.appendChild(tomeGrid);
+
+        // Save current build as tome button
+        const saveTomeRow = document.createElement('div');
+        saveTomeRow.style.cssText = 'display:flex;gap:6px;margin-top:6px;align-items:center;';
+        const tomeNameInput = document.createElement('input');
+        tomeNameInput.type = 'text';
+        tomeNameInput.placeholder = 'Tome name...';
+        tomeNameInput.style.cssText = 'flex:1;padding:4px 8px;background:#111;border:1px solid #555;color:#fff;border-radius:4px;font-size:11px;';
+        saveTomeRow.appendChild(tomeNameInput);
+
+        const saveTomeBtn = document.createElement('button');
+        saveTomeBtn.className = 'ws-btn';
+        saveTomeBtn.textContent = '💾 SAVE AS TOME';
+        saveTomeBtn.style.cssText = 'padding:4px 10px;font-size:11px;white-space:nowrap;';
+        saveTomeBtn.addEventListener('click', () => {
+            const name = tomeNameInput.value.trim();
+            if (!name) { tomeNameInput.style.borderColor = '#ff4444'; return; }
+            saveCurrentAsTome(name);
+            tomeNameInput.value = '';
+            saveTomeBtn.textContent = '✓ SAVED';
+            setTimeout(() => { saveTomeBtn.textContent = '💾 SAVE AS TOME'; }, 1200);
+            buildLibraryPanel();
+        });
+        saveTomeRow.appendChild(saveTomeBtn);
+        tomeSection.appendChild(saveTomeRow);
+
+        libPanel.appendChild(tomeSection);
 
         // Spell dock drop zones
         let dockEl = document.getElementById('spellDock');
@@ -711,6 +817,74 @@ const Spellbook = (() => {
             reader.readAsText(file);
         });
         input.click();
+    }
+
+    // ═══════════════════════════════════════
+    //  TOME SYSTEM
+    // ═══════════════════════════════════════
+    function equipTome(tome) {
+        if (!tome || !tome.spells) return;
+        const allSpells = SpellLibrary.getAll();
+        for (let i = 0; i < 6; i++) {
+            const spellName = tome.spells[i];
+            if (!spellName) continue;
+            const libSpell = allSpells.find(s => s.name === spellName);
+            if (libSpell) {
+                equipLibrarySpellToSlot(libSpell, i);
+            }
+        }
+        // Switch back to editor view
+        libraryVisible = false;
+        const libPanel = document.getElementById('libraryPanel');
+        const editorPanel = document.getElementById('spellEditorPanel');
+        if (libPanel) libPanel.classList.add('hidden');
+        if (editorPanel) editorPanel.classList.remove('hidden');
+        buildEditorPanel();
+        // Update all tabs
+        for (let i = 0; i < 6; i++) updateSpellTab(i);
+        updateDockSlots();
+    }
+
+    function equipCustomTome(ct) {
+        if (!ct || !ct.spells) return;
+        deserializeSpellbook(ct.spells);
+        libraryVisible = false;
+        const libPanel = document.getElementById('libraryPanel');
+        const editorPanel = document.getElementById('spellEditorPanel');
+        if (libPanel) libPanel.classList.add('hidden');
+        if (editorPanel) editorPanel.classList.remove('hidden');
+        buildEditorPanel();
+        for (let i = 0; i < 6; i++) updateSpellTab(i);
+        updateDockSlots();
+    }
+
+    function saveCurrentAsTome(name) {
+        const tomes = loadCustomTomes();
+        // Remove existing tome with same name
+        const filtered = tomes.filter(t => t.name !== name);
+        filtered.push({
+            name,
+            spellNames: spells.map(s => s.name || 'Unnamed'),
+            spells: serializeSpellbook(),
+        });
+        try {
+            localStorage.setItem('arcform-custom-tomes', JSON.stringify(filtered));
+        } catch(e) {}
+    }
+
+    function loadCustomTomes() {
+        try {
+            const raw = localStorage.getItem('arcform-custom-tomes');
+            if (!raw) return [];
+            return JSON.parse(raw) || [];
+        } catch(e) { return []; }
+    }
+
+    function deleteCustomTome(name) {
+        const tomes = loadCustomTomes().filter(t => t.name !== name);
+        try {
+            localStorage.setItem('arcform-custom-tomes', JSON.stringify(tomes));
+        } catch(e) {}
     }
 
     return { init, show, hide, compileSpells, updateStatus, resetReady, isReady: () => ready };

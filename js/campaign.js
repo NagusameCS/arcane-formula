@@ -710,7 +710,7 @@ const Campaign = (() => {
 
         for (let i = arcons.length - 1; i >= 0; i--) {
             const a = arcons[i];
-            if (!a.alive || a.ownerId === 'enemy') continue;
+            if (!a.alive || (typeof a.ownerId === 'string' && a.ownerId.startsWith('enemy_'))) continue;
 
             const hasHeal = a.effects && a.effects.includes(ArconSystem.EFFECTS.HEALING);
             const hasPiston = a.effects && a.effects.includes(ArconSystem.EFFECTS.PISTON);
@@ -866,6 +866,9 @@ const Campaign = (() => {
                 type: 'campaign-cast', spellIndex: index,
                 casterX: player.x, casterY: player.y,
                 cursorX: world.x, cursorY: world.y, cost: spell.cost,
+                xExpr: spell.xExpr, yExpr: spell.yExpr,
+                emitExpr: spell.emitExpr, widthExpr: spell.widthExpr,
+                effects: spell.effects || [],
             });
         }
     }
@@ -952,13 +955,27 @@ const Campaign = (() => {
             }
             case 'campaign-cast': {
                 try {
-                    const aim = Math.atan2(data.cursorY - data.casterY, data.cursorX - data.casterX);
-                    const s = {
-                        cost: data.cost,
-                        xFn: (v) => data.casterX + Math.cos(aim) * 300 * (v.t - v.i * 0.02),
-                        yFn: (v) => data.casterY + Math.sin(aim) * 300 * (v.t - v.i * 0.02),
-                        emitDelayFn: (v) => v.i * 0.02, widthFn: () => 4,
-                    };
+                    let s;
+                    if (data.xExpr && data.yExpr) {
+                        // Full spell data transmitted — reconstruct actual spell
+                        s = {
+                            cost: data.cost,
+                            xFn: Parser.compile(data.xExpr),
+                            yFn: Parser.compile(data.yExpr),
+                            emitDelayFn: Parser.compile(data.emitExpr || 'i*0.02'),
+                            widthFn: Parser.compile(data.widthExpr || '4'),
+                            effects: data.effects || [],
+                        };
+                    } else {
+                        // Legacy fallback for older clients
+                        const aim = Math.atan2(data.cursorY - data.casterY, data.cursorX - data.casterX);
+                        s = {
+                            cost: data.cost,
+                            xFn: (v) => data.casterX + Math.cos(aim) * 300 * (v.t - v.i * 0.02),
+                            yFn: (v) => data.casterY + Math.sin(aim) * 300 * (v.t - v.i * 0.02),
+                            emitDelayFn: (v) => v.i * 0.02, widthFn: () => 4,
+                        };
+                    }
                     const cast = ArconSystem.castSpell(s,
                         { id: pid, x: data.casterX, y: data.casterY },
                         { id: 'target', x: data.cursorX, y: data.cursorY },
