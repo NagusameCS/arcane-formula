@@ -125,8 +125,8 @@ const ArconSystem = (() => {
 
             for (const ent of entities) {
                 if (ent.id === a.ownerId) continue;
-                // Dashing grants i-frames
-                if (ent.dashing) continue;
+                // Dashing or invuln grants i-frames
+                if (ent.dashing || (ent.invulnTimer && ent.invulnTimer > 0)) continue;
 
                 const dx = a.x - ent.x, dy = a.y - ent.y;
                 const hitDist = a.width / 2 + ent.hitRadius;

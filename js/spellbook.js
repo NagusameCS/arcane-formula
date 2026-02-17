@@ -56,11 +56,21 @@ const Spellbook = (() => {
             tabsEl.appendChild(tab);
         }
 
+        // Library browse button
+        const libBtn = document.createElement('button');
+        libBtn.className = 'spell-tab library-tab';
+        libBtn.innerHTML = '<span class="tab-num">📖</span><span class="tab-name">LIBRARY</span>';
+        libBtn.addEventListener('click', toggleLibrary);
+        tabsEl.appendChild(libBtn);
+
         // Build palette (shared across all spells)
         buildPalette();
 
         // Build the editor for current spell
         buildEditorPanel();
+
+        // Build spell library panel (hidden by default)
+        buildLibraryPanel();
 
         // Ready button
         document.getElementById('readyBtn').onclick = () => {
@@ -259,6 +269,114 @@ const Spellbook = (() => {
             const nameEl = tabs[idx].querySelector('.tab-name');
             if (nameEl) nameEl.textContent = spells[idx].name || 'Unnamed';
         }
+    }
+
+    let libraryVisible = false;
+
+    function toggleLibrary() {
+        libraryVisible = !libraryVisible;
+        const libPanel = document.getElementById('libraryPanel');
+        const editorPanel = document.getElementById('spellEditorPanel');
+        if (libPanel) libPanel.classList.toggle('hidden', !libraryVisible);
+        if (editorPanel) editorPanel.classList.toggle('hidden', libraryVisible);
+    }
+
+    function buildLibraryPanel() {
+        // Check if SpellLibrary exists
+        if (typeof SpellLibrary === 'undefined') return;
+
+        let libPanel = document.getElementById('libraryPanel');
+        if (!libPanel) {
+            libPanel = document.createElement('div');
+            libPanel.id = 'libraryPanel';
+            libPanel.className = 'spell-library-panel hidden';
+            const main = document.querySelector('.spellbook-main');
+            if (main) main.insertBefore(libPanel, main.firstChild);
+        }
+        libPanel.innerHTML = '';
+
+        const header = document.createElement('div');
+        header.className = 'library-header';
+        header.innerHTML = '<h3>SPELL LIBRARY</h3><p>Click a spell to equip it in the current slot</p>';
+        libPanel.appendChild(header);
+
+        const categories = SpellLibrary.getCategories();
+        for (const cat of categories) {
+            const catSpells = SpellLibrary.getByCategory(cat);
+            if (catSpells.length === 0) continue;
+
+            const section = document.createElement('div');
+            section.className = 'library-category';
+
+            const catLabel = document.createElement('div');
+            catLabel.className = 'library-cat-label';
+            catLabel.textContent = cat.toUpperCase();
+            section.appendChild(catLabel);
+
+            const grid = document.createElement('div');
+            grid.className = 'library-grid';
+
+            for (const libSpell of catSpells) {
+                const card = document.createElement('div');
+                card.className = 'library-card';
+
+                const name = document.createElement('div');
+                name.className = 'library-card-name';
+                name.textContent = libSpell.name;
+
+                const cost = document.createElement('div');
+                cost.className = 'library-card-cost';
+                cost.textContent = `N=${libSpell.cost}`;
+
+                const desc = document.createElement('div');
+                desc.className = 'library-card-desc';
+                desc.textContent = libSpell.desc || '';
+
+                // Preview LaTeX for X formula
+                const preview = document.createElement('div');
+                preview.className = 'library-card-preview';
+                try {
+                    const latex = Blocks.toLatex(libSpell.x);
+                    katex.render(latex.substring(0, 80), preview, { throwOnError: false, displayMode: false });
+                } catch(e) { preview.textContent = '...'; }
+
+                card.appendChild(name);
+                card.appendChild(cost);
+                card.appendChild(preview);
+                card.appendChild(desc);
+
+                card.addEventListener('click', () => {
+                    equipLibrarySpell(libSpell);
+                });
+
+                grid.appendChild(card);
+            }
+
+            section.appendChild(grid);
+            libPanel.appendChild(section);
+        }
+    }
+
+    function equipLibrarySpell(libSpell) {
+        const spell = spells[currentSpell];
+        spell.name = libSpell.name;
+        spell.cost = libSpell.cost;
+        spell.trees = {
+            x: Blocks.cloneNode(libSpell.x),
+            y: Blocks.cloneNode(libSpell.y),
+            emit: Blocks.cloneNode(libSpell.emit),
+            width: Blocks.cloneNode(libSpell.width),
+        };
+        editors[currentSpell] = {};
+        updateSpellTab(currentSpell);
+
+        // Switch back to editor
+        libraryVisible = false;
+        const libPanel = document.getElementById('libraryPanel');
+        const editorPanel = document.getElementById('spellEditorPanel');
+        if (libPanel) libPanel.classList.add('hidden');
+        if (editorPanel) editorPanel.classList.remove('hidden');
+        buildEditorPanel();
     }
 
     function compileSpells() {

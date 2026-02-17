@@ -1,0 +1,361 @@
+// ─────────────────────────────────────────────
+//  SPELL LIBRARY — Massive collection of premade spells
+//  Players browse, preview, and equip spells into their 6-slot loadout
+// ─────────────────────────────────────────────
+
+const SpellLibrary = (() => {
+    const { n, v, op, fn } = Blocks;
+
+    // Helper aliases
+    const _n = n, _v = v, _op = op, _fn = fn;
+
+    // ── SPELL CATEGORIES ──
+    const CATEGORIES = ['Offensive', 'Defensive', 'Utility', 'Advanced', 'Chaos'];
+
+    // ── THE LIBRARY ──
+    const SPELLS = [
+        // ═══════════════════════════════════════
+        //  OFFENSIVE — Direct damage dealers
+        // ═══════════════════════════════════════
+        {
+            name: 'Beam', category: 'Offensive', cost: 30,
+            desc: 'A focused stream of arcons aimed at the cursor.',
+            x: op('+', v('player.x'), op('*', op('*', fn('cos', v('aim')), n(300)), op('-', v('t'), op('*', v('i'), n(0.02))))),
+            y: op('+', v('player.y'), op('*', op('*', fn('sin', v('aim')), n(300)), op('-', v('t'), op('*', v('i'), n(0.02))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(5),
+        },
+        {
+            name: 'Shotgun', category: 'Offensive', cost: 35,
+            desc: 'Wide spread blast. High damage up close.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(0.08)))), op('*', n(350), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(0.08)))), op('*', n(350), v('t')))),
+            emit: n(0),
+            width: n(3),
+        },
+        {
+            name: 'Sniper', category: 'Offensive', cost: 15,
+            desc: 'Few arcons but extremely fast and precise.',
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(600), op('-', v('t'), op('*', v('i'), n(0.05)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', n(600), op('-', v('t'), op('*', v('i'), n(0.05)))))),
+            emit: op('*', v('i'), n(0.05)),
+            width: n(3),
+        },
+        {
+            name: 'Fireball', category: 'Offensive', cost: 40,
+            desc: 'Dense cluster that flies at the cursor then expands.',
+            x: op('+', op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(200), v('t')))),
+                op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(40), fn('max', n(0), op('-', v('t'), n(0.5)))))),
+            y: op('+', op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', n(200), v('t')))),
+                op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(40), fn('max', n(0), op('-', v('t'), n(0.5)))))),
+            emit: n(0),
+            width: n(6),
+        },
+        {
+            name: 'Gatling', category: 'Offensive', cost: 50,
+            desc: 'Rapid-fire stream with slight random spread.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', v('rand'), n(0.5)), n(0.15)))), op('*', n(400), op('-', v('t'), op('*', v('i'), n(0.01)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', v('rand'), n(0.5)), n(0.15)))), op('*', n(400), op('-', v('t'), op('*', v('i'), n(0.01)))))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(3),
+        },
+        {
+            name: 'Seeker', category: 'Offensive', cost: 25,
+            desc: 'Arcons curve toward the enemy over time.',
+            x: op('+', fn('lerp', v('player.x'), v('enemy.x'), fn('min', n(1), op('*', v('t'), n(0.8)))),
+                op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(60), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.8))))))),
+            y: op('+', fn('lerp', v('player.y'), v('enemy.y'), fn('min', n(1), op('*', v('t'), n(0.8)))),
+                op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(60), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.8))))))),
+            emit: op('*', v('i'), n(0.03)),
+            width: n(4),
+        },
+        {
+            name: 'Volley', category: 'Offensive', cost: 30,
+            desc: 'Arc of arcons lobbed upward then falling on target.',
+            x: fn('lerp', v('player.x'), v('cursor.x'), fn('min', n(1), op('*', v('t'), n(0.6)))),
+            y: op('-', fn('lerp', v('player.y'), v('cursor.y'), fn('min', n(1), op('*', v('t'), n(0.6)))),
+                op('*', n(120), op('*', fn('sin', op('*', v('pi'), fn('min', n(1), op('*', v('t'), n(0.6))))), op('+', n(1), op('*', v('i'), n(0.03)))))),
+            emit: op('*', v('i'), n(0.03)),
+            width: n(5),
+        },
+        {
+            name: 'Meteor', category: 'Offensive', cost: 45,
+            desc: 'Arcons rain down from above onto cursor position.',
+            x: op('+', v('cursor.x'), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(4))),
+            y: op('+', op('-', v('cursor.y'), n(300)), op('*', n(300), v('t'))),
+            emit: op('*', v('i'), n(0.04)),
+            width: n(7),
+        },
+        {
+            name: 'Cross', category: 'Offensive', cost: 35,
+            desc: 'Four-directional cross pattern centered on caster.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', fn('floor', op('*', op('/', v('i'), v('N')), n(4))), op('/', v('pi'), n(2)))), op('*', n(250), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', fn('floor', op('*', op('/', v('i'), v('N')), n(4))), op('/', v('pi'), n(2)))), op('*', n(250), v('t')))),
+            emit: op('*', fn('mod', v('i'), op('/', v('N'), n(4))), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Lance', category: 'Offensive', cost: 20,
+            desc: 'Ultra-fast narrow piercing beam.',
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(500), op('-', v('t'), op('*', v('i'), n(0.005)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', n(500), op('-', v('t'), op('*', v('i'), n(0.005)))))),
+            emit: op('*', v('i'), n(0.005)),
+            width: n(2),
+        },
+        {
+            name: 'Ricochet', category: 'Offensive', cost: 30,
+            desc: 'Arcons bounce off arena walls.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', v('i'), n(0.3)))), op('*', n(200), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', v('i'), n(0.3)))), op('*', n(200), v('t')))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+
+        // ═══════════════════════════════════════
+        //  DEFENSIVE — Shields, walls, barriers
+        // ═══════════════════════════════════════
+        {
+            name: 'Wall', category: 'Defensive', cost: 25,
+            desc: 'Stationary barrier perpendicular to aim direction.',
+            x: op('+', op('+', v('player.x'), op('*', fn('cos', v('aim')), n(80))), op('*', fn('cos', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(5)))),
+            y: op('+', op('+', v('player.y'), op('*', fn('sin', v('aim')), n(80))), op('*', fn('sin', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(5)))),
+            emit: n(0),
+            width: n(6),
+        },
+        {
+            name: 'Aegis', category: 'Defensive', cost: 30,
+            desc: 'Ring of arcons orbiting around the caster.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(3)))), n(50))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(3)))), n(50))),
+            emit: n(0),
+            width: n(5),
+        },
+        {
+            name: 'Dome', category: 'Defensive', cost: 40,
+            desc: 'Hemisphere of arcons around caster.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('+', n(40), op('*', n(10), fn('sin', op('*', v('t'), n(2))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('+', n(40), op('*', n(10), fn('sin', op('*', v('t'), n(2))))))),
+            emit: n(0),
+            width: n(5),
+        },
+        {
+            name: 'Mirror', category: 'Defensive', cost: 20,
+            desc: 'Flat wall at cursor position facing the caster.',
+            x: op('+', v('cursor.x'), op('*', fn('cos', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(6)))),
+            y: op('+', v('cursor.y'), op('*', fn('sin', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(6)))),
+            emit: n(0),
+            width: n(7),
+        },
+        {
+            name: 'Thorns', category: 'Defensive', cost: 30,
+            desc: 'Arcons orbit then fly outward when enemies near.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(2)))), op('+', n(30), op('*', v('t'), n(50))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(2)))), op('+', n(30), op('*', v('t'), n(50))))),
+            emit: n(0),
+            width: n(4),
+        },
+        {
+            name: 'Cocoon', category: 'Defensive', cost: 35,
+            desc: 'Dense shield that contracts and expands.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(35), op('+', n(1), op('*', fn('sin', op('*', v('t'), n(4))), n(0.4)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(35), op('+', n(1), op('*', fn('sin', op('*', v('t'), n(4))), n(0.4)))))),
+            emit: n(0),
+            width: n(6),
+        },
+
+        // ═══════════════════════════════════════
+        //  UTILITY — Movement, zone control, combos
+        // ═══════════════════════════════════════
+        {
+            name: 'Nova', category: 'Utility', cost: 40,
+            desc: 'Radial explosion pushing arcons in all directions.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(180), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(180), v('t')))),
+            emit: n(0),
+            width: n(4),
+        },
+        {
+            name: 'Spiral', category: 'Utility', cost: 25,
+            desc: 'Rotating helix toward aim direction.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('+', v('aim'), op('*', v('i'), n(0.4))), op('*', v('t'), n(4)))), op('*', n(200), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('+', v('aim'), op('*', v('i'), n(0.4))), op('*', v('t'), n(4)))), op('*', n(200), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(4),
+        },
+        {
+            name: 'Rain', category: 'Utility', cost: 30,
+            desc: 'Arcons expand outward from cursor position.',
+            x: op('+', v('cursor.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('+', n(10), op('*', v('t'), n(40))))),
+            y: op('+', v('cursor.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('+', n(10), op('*', v('t'), n(40))))),
+            emit: op('*', v('i'), n(0.05)),
+            width: n(4),
+        },
+        {
+            name: 'Trap', category: 'Utility', cost: 20,
+            desc: 'Places arcons at cursor that orbit tightly in place.',
+            x: op('+', v('cursor.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(5)))), n(15))),
+            y: op('+', v('cursor.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(5)))), n(15))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Minefield', category: 'Utility', cost: 35,
+            desc: 'Scatter arcons across the field that hover in place.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', v('i'), n(2.39))), op('*', v('i'), n(5)))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', v('i'), n(2.39))), op('*', v('i'), n(5)))),
+            emit: op('*', v('i'), n(0.03)),
+            width: n(5),
+        },
+        {
+            name: 'Vortex', category: 'Utility', cost: 30,
+            desc: 'Arcons spiral inward toward cursor, trapping enemies.',
+            x: op('+', v('cursor.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(4)))), op('*', n(80), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.5))))))),
+            y: op('+', v('cursor.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(4)))), op('*', n(80), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.5))))))),
+            emit: n(0),
+            width: n(4),
+        },
+        {
+            name: 'Blink', category: 'Utility', cost: 10,
+            desc: 'Quick burst that appears at cursor instantly.',
+            x: op('+', v('cursor.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(20), v('t')))),
+            y: op('+', v('cursor.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(20), v('t')))),
+            emit: n(0),
+            width: n(3),
+        },
+        {
+            name: 'Wave', category: 'Utility', cost: 30,
+            desc: 'Wide sine-wave pattern sweeping forward.',
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(250), op('-', v('t'), op('*', v('i'), n(0.02)))))),
+            y: op('+', v('player.y'), op('+', op('*', fn('sin', v('aim')), op('*', n(250), op('-', v('t'), op('*', v('i'), n(0.02))))),
+                op('*', n(40), fn('sin', op('*', v('t'), n(8)))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+
+        // ═══════════════════════════════════════
+        //  ADVANCED — Complex mechanics
+        // ═══════════════════════════════════════
+        {
+            name: 'Helix', category: 'Advanced', cost: 40,
+            desc: 'Double helix DNA-like pattern toward aim.',
+            x: op('+', v('player.x'), op('+', op('*', fn('cos', v('aim')), op('*', n(200), v('t'))),
+                op('*', fn('cos', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', n(25), fn('sin', op('+', op('*', v('t'), n(8)), op('*', v('pi'), op('/', v('i'), v('N'))))))))),
+            y: op('+', v('player.y'), op('+', op('*', fn('sin', v('aim')), op('*', n(200), v('t'))),
+                op('*', fn('sin', op('+', v('aim'), op('/', v('pi'), n(2)))), op('*', n(25), fn('sin', op('+', op('*', v('t'), n(8)), op('*', v('pi'), op('/', v('i'), v('N'))))))))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(4),
+        },
+        {
+            name: 'Orbit', category: 'Advanced', cost: 35,
+            desc: 'Arcons orbit a point between you and cursor, then release.',
+            x: op('+', fn('lerp', v('player.x'), v('cursor.x'), n(0.5)),
+                op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(5)))),
+                    op('+', n(30), op('*', fn('max', n(0), op('-', v('t'), n(1.5))), n(100))))),
+            y: op('+', fn('lerp', v('player.y'), v('cursor.y'), n(0.5)),
+                op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(5)))),
+                    op('+', n(30), op('*', fn('max', n(0), op('-', v('t'), n(1.5))), n(100))))),
+            emit: n(0),
+            width: n(4),
+        },
+        {
+            name: 'Comet', category: 'Advanced', cost: 30,
+            desc: 'Cluster with a trail that arcs toward cursor.',
+            x: op('+', fn('lerp', v('player.x'), v('cursor.x'), fn('min', n(1), v('t'))),
+                op('*', fn('cos', op('*', v('i'), n(0.5))), op('*', n(5), op('+', n(1), v('i'))))),
+            y: op('-', fn('lerp', v('player.y'), v('cursor.y'), fn('min', n(1), v('t'))),
+                op('*', n(100), op('*', fn('sin', op('*', v('pi'), fn('min', n(1), v('t')))), op('+', n(1), op('*', v('i'), n(0.02)))))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(5),
+        },
+        {
+            name: 'Pentagram', category: 'Advanced', cost: 50,
+            desc: 'Five-pointed star pattern that rotates.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', op('/', v('i'), v('N')), op('*', n(4), v('pi'))), op('*', v('t'), n(1)))), op('+', n(60), op('*', n(40), fn('sin', op('*', v('t'), n(2))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', op('/', v('i'), v('N')), op('*', n(4), v('pi'))), op('*', v('t'), n(1)))), op('+', n(60), op('*', n(40), fn('sin', op('*', v('t'), n(2))))))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(4),
+        },
+        {
+            name: 'Wormhole', category: 'Advanced', cost: 45,
+            desc: 'Arcons appear at caster, teleport to cursor, then burst.',
+            x: op('+',
+                fn('lerp', v('player.x'), v('cursor.x'), fn('min', n(1), op('*', v('t'), n(3)))),
+                op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                    op('*', n(60), fn('max', n(0), op('-', v('t'), n(0.4)))))),
+            y: op('+',
+                fn('lerp', v('player.y'), v('cursor.y'), fn('min', n(1), op('*', v('t'), n(3)))),
+                op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                    op('*', n(60), fn('max', n(0), op('-', v('t'), n(0.4)))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(5),
+        },
+        {
+            name: 'Fracture', category: 'Advanced', cost: 35,
+            desc: 'Arcons split into sub-patterns as they travel.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', fn('mod', v('i'), n(5)), n(0.4)))), op('*', n(250), op('-', v('t'), op('*', fn('floor', op('/', v('i'), n(5))), n(0.1)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', fn('mod', v('i'), n(5)), n(0.4)))), op('*', n(250), op('-', v('t'), op('*', fn('floor', op('/', v('i'), n(5))), n(0.1)))))),
+            emit: op('*', fn('floor', op('/', v('i'), n(5))), n(0.1)),
+            width: n(3),
+        },
+
+        // ═══════════════════════════════════════
+        //  CHAOS — Wild and unpredictable
+        // ═══════════════════════════════════════
+        {
+            name: 'Scatter', category: 'Chaos', cost: 30,
+            desc: 'Random directions, random delays. Pure chaos.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(250), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(250), v('t')))),
+            emit: op('*', v('rand'), n(0.5)),
+            width: n(4),
+        },
+        {
+            name: 'Storm', category: 'Chaos', cost: 50,
+            desc: 'Dense field of arcons swirling everywhere.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', v('rand'), op('*', n(2), v('pi'))), op('*', v('t'), n(3)))), op('*', op('+', n(50), op('*', v('rand'), n(100))), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', v('rand'), op('*', n(2), v('pi'))), op('*', v('t'), n(3)))), op('*', op('+', n(50), op('*', v('rand'), n(100))), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(3),
+        },
+        {
+            name: 'Eruption', category: 'Chaos', cost: 45,
+            desc: 'Arcons erupt upward then scatter in all directions.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(150), fn('max', n(0), op('-', v('t'), n(0.5)))))),
+            y: op('-', v('player.y'), op('*', n(200), op('-', v('t'), op('*', v('t'), v('t'))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(5),
+        },
+        {
+            name: 'Swarm', category: 'Chaos', cost: 40,
+            desc: 'Arcons that wobble and jitter as they approach enemy.',
+            x: op('+', fn('lerp', v('player.x'), v('enemy.x'), fn('min', n(1), op('*', v('t'), n(0.5)))),
+                op('*', n(30), fn('sin', op('+', op('*', v('t'), n(10)), op('*', v('i'), n(1)))))),
+            y: op('+', fn('lerp', v('player.y'), v('enemy.y'), fn('min', n(1), op('*', v('t'), n(0.5)))),
+                op('*', n(30), fn('cos', op('+', op('*', v('t'), n(10)), op('*', v('i'), n(1)))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(3),
+        },
+        {
+            name: 'Collapse', category: 'Chaos', cost: 35,
+            desc: 'Arcons converge from the edges of the arena to cursor.',
+            x: fn('lerp', op('+', op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), n(480)), n(480)), v('cursor.x'), fn('min', n(1), op('*', v('t'), n(0.7)))),
+            y: fn('lerp', op('+', op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), n(270)), n(270)), v('cursor.y'), fn('min', n(1), op('*', v('t'), n(0.7)))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Galaxy', category: 'Chaos', cost: 50,
+            desc: 'Logarithmic spiral pattern like a galaxy arm.',
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', v('i'), n(0.2)), op('*', v('t'), n(2)))), op('*', op('+', n(20), op('*', v('i'), n(2))), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', v('i'), n(0.2)), op('*', v('t'), n(2)))), op('*', op('+', n(20), op('*', v('i'), n(2))), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(3),
+        },
+    ];
+
+    function getAll() { return SPELLS; }
+    function getByCategory(cat) { return SPELLS.filter(s => s.category === cat); }
+    function getCategories() { return CATEGORIES; }
+
+    return { getAll, getByCategory, getCategories, SPELLS, CATEGORIES };
+})();

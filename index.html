@@ -12,6 +12,26 @@
 <body>
     <canvas id="gameCanvas"></canvas>
 
+    <!-- MODE SELECT -->
+    <div id="mode-select" class="hidden overlay">
+        <div class="mode-box">
+            <h1 class="lobby-title">ARCANE FORMULA</h1>
+            <p class="lobby-sub" style="margin-bottom:30px">Choose your path</p>
+            <div class="mode-buttons">
+                <button id="modePvp" class="mode-btn">
+                    <div class="mode-icon">⚔️</div>
+                    <div class="mode-label">PVP ARENA</div>
+                    <div class="mode-desc">Duel another mage online</div>
+                </button>
+                <button id="modeCampaign" class="mode-btn">
+                    <div class="mode-icon">🏰</div>
+                    <div class="mode-label">CAMPAIGN</div>
+                    <div class="mode-desc">Clear dungeons solo or co-op</div>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- LOBBY -->
     <div id="lobby" class="hidden overlay">
         <div class="lobby-box">
@@ -24,6 +44,7 @@
                     <input id="roomCodeInput" type="text" placeholder="ROOM CODE" maxlength="6" spellcheck="false" autocomplete="off">
                     <button id="joinRoom" class="btn-gold">JOIN</button>
                 </div>
+                <button id="soloBtn" class="btn-gold hidden" style="margin-top:10px">PLAY SOLO</button>
             </div>
             <div id="roomStatus" class="room-status"></div>
             <div id="roomCodeDisplay" class="room-code hidden"></div>
@@ -59,7 +80,7 @@
         </div>
     </div>
 
-    <!-- HUD -->
+    <!-- HUD (PvP) -->
     <div id="hud" class="hidden">
         <div class="hud-left">
             <div class="hud-label">YOU</div>
@@ -77,6 +98,20 @@
         </div>
     </div>
 
+    <!-- HUD (Campaign) -->
+    <div id="campaign-hud" class="hidden">
+        <div class="hud-left">
+            <div class="hud-label">MAGE</div>
+            <div class="hp-bar"><div id="camp-hp" class="hp-fill"></div><span id="camp-hp-text" class="bar-text">150</span></div>
+            <div class="mana-bar"><div id="camp-mana" class="mana-fill"></div><span id="camp-mana-text" class="bar-text">100</span></div>
+            <div class="spell-keys" id="camp-spellKeys"></div>
+        </div>
+        <div class="hud-center">
+            <div id="camp-dash" class="dash-cd ready">DASH [SHIFT]</div>
+            <div id="camp-enemies" class="enemy-count"></div>
+        </div>
+    </div>
+
     <!-- VICTORY -->
     <div id="victory-screen" class="hidden overlay">
         <h1 id="victory-text"></h1>
@@ -88,9 +123,13 @@
     <script src="js/blocks.js"></script>
     <script src="js/arcon.js"></script>
     <script src="js/intro.js"></script>
+    <script src="js/spell-library.js"></script>
     <script src="js/spellbook.js"></script>
     <script src="js/network.js"></script>
+    <script src="js/dungeon.js"></script>
+    <script src="js/enemies.js"></script>
     <script src="js/battle.js"></script>
+    <script src="js/campaign.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

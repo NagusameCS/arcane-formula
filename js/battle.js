@@ -9,9 +9,11 @@ const Battle = (() => {
     const HP_MAX = 100;
     const BURNOUT_THRESHOLD = 0.7;
     const BACKLASH_DAMAGE = 10;
-    const DASH_SPEED = 600;
-    const DASH_DURATION = 0.12;
-    const DASH_COOLDOWN = 1.5;
+    const DASH_SPEED = 700;
+    const DASH_DURATION = 0.15;
+    const DASH_COOLDOWN = 0.5;
+    const DASH_CHAIN_WINDOW = 0.15;
+    const DASH_INVULN = 0.25;
     const SYNC_RATE = 1 / 20; // 20 Hz
 
     let player, enemy;
@@ -32,12 +34,14 @@ const Battle = (() => {
             hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
             hitFlash: 0, burnout: 0, speed: 150,
             dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
+            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
         };
         enemy = {
             id: 'enemy', x: isHost ? 760 : 200, y: 270,
             hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
             hitFlash: 0, burnout: 0, speed: 150,
             dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
+            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
         };
 
         playerSpells = compiledSpells;
@@ -82,16 +86,27 @@ const Battle = (() => {
         // Dash
         if (player.dashing) {
             player.dashTimer -= dt;
-            player.x += player.dashDirX * DASH_SPEED * dt;
-            player.y += player.dashDirY * DASH_SPEED * dt;
+            const dashMul = 1 + player.dashChainCount * 0.15;
+            player.x += player.dashDirX * DASH_SPEED * dashMul * dt;
+            player.y += player.dashDirY * DASH_SPEED * dashMul * dt;
+            // Dash trail
+            if (Math.random() < 0.8) {
+                arenaParticles.push({
+                    x: player.x + (Math.random() - .5) * 10, y: player.y + (Math.random() - .5) * 10,
+                    vx: -player.dashDirX * 40 + (Math.random() - .5) * 20,
+                    vy: -player.dashDirY * 40 + (Math.random() - .5) * 20,
+                    life: 0.3, maxLife: 0.3, size: 3, color: '#4488ff',
+                });
+            }
             if (player.dashTimer <= 0) {
                 player.dashing = false;
-                // Dash trail burst
-                for (let p = 0; p < 8; p++) {
+                player.dashChainWindow = DASH_CHAIN_WINDOW;
+                // Dash burst
+                for (let p = 0; p < 12; p++) {
                     arenaParticles.push({
                         x: player.x + (Math.random() - .5) * 20, y: player.y + (Math.random() - .5) * 20,
-                        vx: (Math.random() - .5) * 60, vy: (Math.random() - .5) * 60,
-                        life: 0.3, maxLife: 0.3, size: 2, color: '#4488ff',
+                        vx: (Math.random() - .5) * 80, vy: (Math.random() - .5) * 80,
+                        life: 0.4, maxLife: 0.4, size: 2 + Math.random() * 2, color: '#4488ff',
                     });
                 }
             }
@@ -104,6 +119,9 @@ const Battle = (() => {
         player.y = Math.max(20, Math.min(520, player.y));
 
         if (player.dashCooldown > 0) player.dashCooldown -= dt;
+        if (player.dashChainWindow > 0) player.dashChainWindow -= dt;
+        if (player.invulnTimer > 0) player.invulnTimer -= dt;
+        if (enemy.invulnTimer > 0) enemy.invulnTimer -= dt;
 
         // ── Mana regen (only for non-locked mana) ──
         const regenRate = player.burnout > 0 ? MANA_REGEN_BURNOUT : MANA_REGEN;
@@ -186,7 +204,11 @@ const Battle = (() => {
     }
 
     function doDash() {
-        if (player.dashing || player.dashCooldown > 0) return;
+        if (player.dashing) return;
+
+        const isChain = player.dashChainWindow > 0 && player.dashChainCount > 0;
+        if (!isChain && player.dashCooldown > 0) return;
+
         let dx = 0, dy = 0;
         if (keys['w'] || keys['arrowup']) dy -= 1;
         if (keys['s'] || keys['arrowdown']) dy += 1;
@@ -202,9 +224,17 @@ const Battle = (() => {
         player.dashDirY = dy / len;
         player.dashing = true;
         player.dashTimer = DASH_DURATION;
-        player.dashCooldown = DASH_COOLDOWN;
+        player.invulnTimer = DASH_INVULN;
 
-        Network.send({ type: 'dash', dirX: player.dashDirX, dirY: player.dashDirY });
+        if (isChain) {
+            player.dashChainCount++;
+            player.dashCooldown = Math.max(0.15, DASH_COOLDOWN - player.dashChainCount * 0.1);
+        } else {
+            player.dashChainCount = 1;
+            player.dashCooldown = DASH_COOLDOWN;
+        }
+
+        Network.send({ type: 'dash', dirX: player.dashDirX, dirY: player.dashDirY, chain: player.dashChainCount });
     }
 
     // Handle messages from opponent
@@ -341,8 +371,14 @@ const Battle = (() => {
         }
 
         const dashEl = document.getElementById('dash-cd');
-        if (player.dashCooldown > 0) { dashEl.textContent = `DASH ${player.dashCooldown.toFixed(1)}s`; dashEl.className = 'dash-cd'; }
-        else { dashEl.textContent = 'DASH [SHIFT]'; dashEl.className = 'dash-cd ready'; }
+        if (player.dashCooldown > 0 && !player.dashing) {
+            dashEl.textContent = `DASH ${player.dashCooldown.toFixed(1)}s`;
+            dashEl.className = 'dash-cd';
+        } else {
+            const chainText = player.dashChainWindow > 0 ? ` [CHAIN x${player.dashChainCount}]` : '';
+            dashEl.textContent = `DASH [SHIFT]${chainText}`;
+            dashEl.className = 'dash-cd ready';
+        }
     }
 
     function showVictory() {
@@ -391,19 +427,26 @@ const Battle = (() => {
 
     function renderMage(ctx, mage, color, light) {
         const flash = mage.hitFlash > 0;
-        ctx.globalAlpha = mage.dashing ? 0.3 : 1;
+        const isDashing = mage.dashing;
 
-        // Ghost trail when dashing
-        if (mage.dashing) {
-            ctx.globalAlpha = 0.15;
+        // Ghost trail when dashing (enhanced with afterimages)
+        if (isDashing) {
+            ctx.globalAlpha = 0.1;
             ctx.fillStyle = color;
+            const stretchX = (mage.dashDirX || 0) * -25;
+            const stretchY = (mage.dashDirY || 0) * -25;
+            // Afterimage 1
+            ctx.fillRect(mage.x - 6 + stretchX, mage.y - 14 + stretchY, 12, 24);
+            // Afterimage 2
+            ctx.globalAlpha = 0.05;
+            ctx.fillRect(mage.x - 4 + stretchX * 2, mage.y - 10 + stretchY * 2, 8, 18);
+            ctx.globalAlpha = 0.15;
             ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
-            ctx.globalAlpha = 0.3;
         }
 
-        ctx.globalAlpha = mage.dashing ? 0.4 : 0.3;
+        ctx.globalAlpha = isDashing ? 0.4 : 0.3;
         ctx.fillStyle = '#000'; ctx.fillRect(mage.x - 8, mage.y + 8, 16, 4);
-        ctx.globalAlpha = mage.dashing ? 0.5 : 1;
+        ctx.globalAlpha = isDashing ? 0.5 : 1;
 
         ctx.fillStyle = flash ? '#fff' : color;
         ctx.fillRect(mage.x - 4, mage.y - 14, 8, 8); // head
@@ -426,6 +469,14 @@ const Battle = (() => {
         ctx.fillStyle = '#fff';
         ctx.fillRect(mage.x - 2, mage.y - 12, 2, 2);
         ctx.fillRect(mage.x + 1, mage.y - 12, 2, 2);
+
+        // Invuln shimmer
+        if (mage.invulnTimer > 0) {
+            ctx.globalAlpha = 0.15 + Math.sin(performance.now() / 50) * 0.1;
+            ctx.fillStyle = '#88ccff';
+            ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
+        }
+
         ctx.globalAlpha = 1;
     }
 
