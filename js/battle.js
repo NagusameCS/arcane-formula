@@ -17,8 +17,8 @@ const Battle = (() => {
     const SYNC_RATE = 1 / 20; // 20 Hz
 
     // Melee constants
-    const MELEE_RANGE = 50;
-    const MELEE_ARC = Math.PI * 0.6;
+    const MELEE_RANGE = 75;
+    const MELEE_ARC = Math.PI * 0.75;
     const MELEE_COOLDOWN = 0.35;
     const MELEE_DURATION = 0.15;
     const MELEE_DAMAGE = 12;

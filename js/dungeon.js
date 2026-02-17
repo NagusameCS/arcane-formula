@@ -1,10 +1,18 @@
 // -----------------------------------------
 //  DUNGEON SYSTEM -- Procedural generation, rendering, minimap
 //  Ported and adapted from Into-The-Deluge
-//  v2: zoom support, better collision, minimap, more spawns
+//  v3: zoom support, better collision, minimap, seeded PRNG for co-op sync
 // -----------------------------------------
 
 const Dungeon = (() => {
+    // ── Seeded PRNG for deterministic dungeon generation ──
+    let _seed = 1;
+    function seedRandom(s) { _seed = s | 0 || 1; }
+    function sRand() {
+        _seed = (_seed * 16807 + 0) % 2147483647;
+        return (_seed & 0x7fffffff) / 2147483647;
+    }
+    function sRandInt(max) { return Math.floor(sRand() * max); }
     const TILE = {
         VOID: 0, FLOOR: 1, WALL: 2, DOOR: 3,
         STAIRS_DOWN: 4, CHEST: 5, TRAP: 6,
@@ -68,6 +76,8 @@ const Dungeon = (() => {
 
     // -- GENERATOR --
     function generate(floorIndex) {
+        // Seed PRNG so co-op clients generate identical dungeons
+        seedRandom(floorIndex * 48271 + 12345);
         const theme = FLOOR_THEMES[FLOOR_ORDER[floorIndex % FLOOR_ORDER.length]];
         const map = [];
         for (let y = 0; y < MAP_H; y++) {
@@ -85,12 +95,12 @@ const Dungeon = (() => {
         for (let cy = 0; cy < 3; cy++) {
             for (let cx = 0; cx < 3; cx++) {
                 if (cx === 1 && cy === 1) continue; // Reserve center for boss
-                if (Math.random() < 0.15 && rooms.length >= 5) continue;
+                if (sRand() < 0.15 && rooms.length >= 5) continue;
 
-                const rw = MIN_ROOM + Math.floor(Math.random() * (MAX_ROOM - MIN_ROOM));
-                const rh = MIN_ROOM + Math.floor(Math.random() * (MAX_ROOM - MIN_ROOM));
-                const rx = cx * cellW + 2 + Math.floor(Math.random() * (cellW - rw - 4));
-                const ry = cy * cellH + 2 + Math.floor(Math.random() * (cellH - rh - 4));
+                const rw = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                const rh = MIN_ROOM + Math.floor(sRand() * (MAX_ROOM - MIN_ROOM));
+                const rx = cx * cellW + 2 + Math.floor(sRand() * (cellW - rw - 4));
+                const ry = cy * cellH + 2 + Math.floor(sRand() * (cellH - rh - 4));
 
                 if (rx < 1 || ry < 1 || rx + rw >= MAP_W - 1 || ry + rh >= MAP_H - 1) continue;
 
@@ -117,8 +127,8 @@ const Dungeon = (() => {
         }
         // Extra connections for loops
         for (let i = 0; i < 3; i++) {
-            const a = rooms[Math.floor(Math.random() * rooms.length)];
-            const b = rooms[Math.floor(Math.random() * rooms.length)];
+            const a = rooms[Math.floor(sRand() * rooms.length)];
+            const b = rooms[Math.floor(sRand() * rooms.length)];
             if (a !== b) connectRooms(map, a, b);
         }
 
@@ -141,23 +151,23 @@ const Dungeon = (() => {
                 [room.x + 1, room.y + room.h - 2], [room.x + room.w - 2, room.y + room.h - 2],
             ];
             for (const [tx, ty] of corners) {
-                if (Math.random() < 0.5 && map[ty] && map[ty][tx] === TILE.FLOOR) {
+                if (sRand() < 0.5 && map[ty] && map[ty][tx] === TILE.FLOOR) {
                     map[ty][tx] = TILE.TORCH_LIT;
                 }
             }
 
             // Chests
-            if (Math.random() < 0.35) {
-                const cx = room.x + 2 + Math.floor(Math.random() * (room.w - 4));
-                const cy = room.y + 2 + Math.floor(Math.random() * (room.h - 4));
+            if (sRand() < 0.35) {
+                const cx = room.x + 2 + Math.floor(sRand() * (room.w - 4));
+                const cy = room.y + 2 + Math.floor(sRand() * (room.h - 4));
                 if (map[cy] && map[cy][cx] === TILE.FLOOR) map[cy][cx] = TILE.CHEST;
             }
 
             // Traps
-            if (Math.random() < 0.3) {
+            if (sRand() < 0.3) {
                 for (let t = 0; t < 3; t++) {
-                    const tx = room.x + 1 + Math.floor(Math.random() * (room.w - 2));
-                    const ty = room.y + 1 + Math.floor(Math.random() * (room.h - 2));
+                    const tx = room.x + 1 + Math.floor(sRand() * (room.w - 2));
+                    const ty = room.y + 1 + Math.floor(sRand() * (room.h - 2));
                     if (map[ty] && map[ty][tx] === TILE.FLOOR) map[ty][tx] = TILE.TRAP;
                 }
             }
@@ -165,11 +175,11 @@ const Dungeon = (() => {
             // Enemy spawn points -- MUCH more enemies
             const minEnemies = Math.max(2, Math.floor(area / 25));
             const maxEnemies = Math.max(3, Math.floor(area / 15));
-            const count = minEnemies + Math.floor(Math.random() * (maxEnemies - minEnemies + 1));
+            const count = minEnemies + Math.floor(sRand() * (maxEnemies - minEnemies + 1));
             for (let e = 0; e < count; e++) {
                 spawnPoints.push({
-                    x: room.x + 2 + Math.floor(Math.random() * (room.w - 4)),
-                    y: room.y + 2 + Math.floor(Math.random() * (room.h - 4)),
+                    x: room.x + 2 + Math.floor(sRand() * (room.w - 4)),
+                    y: room.y + 2 + Math.floor(sRand() * (room.h - 4)),
                     type: 'enemy',
                 });
             }
@@ -188,7 +198,7 @@ const Dungeon = (() => {
         const puzzleRooms = [];
         const normalRooms = rooms.filter(r => !r.isBoss && r !== startRoom && r !== exitRoom);
         const puzzleCount = Math.min(2, Math.floor(normalRooms.length / 3));
-        const shuffled = normalRooms.sort(() => Math.random() - 0.5);
+        const shuffled = normalRooms.sort(() => sRand() - 0.5);
         for (let pi = 0; pi < puzzleCount && pi < shuffled.length; pi++) {
             const pr = shuffled[pi];
             pr.isPuzzle = true;
@@ -220,7 +230,7 @@ const Dungeon = (() => {
         // Pick 1 room for a miniboss (stronger enemy guarding better loot)
         const mbCandidates = normalRooms.filter(r => !r.isPuzzle);
         if (mbCandidates.length > 0) {
-            const mbRoom = mbCandidates[Math.floor(Math.random() * mbCandidates.length)];
+            const mbRoom = mbCandidates[Math.floor(sRand() * mbCandidates.length)];
             mbRoom.isMiniboss = true;
             // Place miniboss spawn marker
             if (map[mbRoom.cy] && map[mbRoom.cy][mbRoom.cx] === TILE.FLOOR) {

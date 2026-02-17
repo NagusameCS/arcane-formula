@@ -1,9 +1,17 @@
 // -----------------------------------------
 //  ENEMY SYSTEM -- Themed enemies, AI, bosses
-//  v2: Fixed AI freezing, NaN guards, better behaviors
+//  v3: Full pixel sprites, animations, seeded spawn
 // -----------------------------------------
 
 const Enemies = (() => {
+    // ── Seeded PRNG for deterministic spawns in co-op ──
+    let _seed = 42;
+    function seedRandom(s) { _seed = s; }
+    function seededRandom() {
+        _seed = (_seed * 16807 + 0) % 2147483647;
+        return (_seed & 0x7fffffff) / 2147483647;
+    }
+
     const TYPES = {
         scarab:        { hp: 15, speed: 80,  size: 8,  color: '#c4a35a', dmg: 5,  behavior: 'chase',  xp: 10 },
         mummy:         { hp: 40, speed: 40,  size: 12, color: '#d4c5a0', dmg: 10, behavior: 'patrol', xp: 25 },
@@ -51,6 +59,8 @@ const Enemies = (() => {
         enemies = [];
         const theme = dungeon.theme;
         const difficulty = 1 + dungeon.floorIndex * 0.3;
+        // Seed PRNG from floor index so co-op clients spawn identical mobs
+        seedRandom(dungeon.floorIndex * 7919 + 13337);
 
         for (const sp of dungeon.spawnPoints) {
             if (sp.type === 'boss') {
@@ -77,7 +87,7 @@ const Enemies = (() => {
                     enemies.push(mb);
                 }
             } else {
-                const typeName = theme.enemies[Math.floor(Math.random() * theme.enemies.length)];
+                const typeName = theme.enemies[Math.floor(seededRandom() * theme.enemies.length)];
                 const typeData = TYPES[typeName];
                 if (typeData) {
                     enemies.push(createEnemy(typeName, {
@@ -105,15 +115,22 @@ const Enemies = (() => {
             alive: true,
             hitFlash: 0,
             attackCd: 0,
-            aiTimer: Math.random() * 2, // Randomize initial AI timers to prevent sync
+            aiTimer: seededRandom() * 2,
             aiDirX: 0, aiDirY: 0,
             phase: 1,
             phaseMax: stats.phases || 1,
             aggro: false,
             aggroRange: isBoss ? 250 : 150,
             attackRange: isBoss ? 100 : 40,
-            spawnTimer: 0.5 + Math.random() * 0.5, // Stagger spawn so enemies don't all update frame 1
+            spawnTimer: 0.5 + seededRandom() * 0.5,
             tauntTimer: 0,
+            // Animation state
+            animTimer: 0,
+            animFrame: 0,
+            facing: 1, // 1=right, -1=left
+            animState: 'idle', // idle, walk, attack, hurt, death
+            deathTimer: 0,
+            prevX: 0, prevY: 0,
         };
     }
 
@@ -353,6 +370,26 @@ const Enemies = (() => {
                     break;
             }
 
+            // ── Animation state tracking ──
+            e.animTimer += dt;
+            // Update facing based on movement direction
+            const mvx = e.x - (e.prevX || e.x);
+            if (mvx > 0.5) e.facing = 1;
+            else if (mvx < -0.5) e.facing = -1;
+            e.prevX = e.x; e.prevY = e.y;
+            // Determine animState
+            if (e.hitFlash > 0.1) {
+                e.animState = 'hurt';
+            } else if (Math.abs(mvx) > 0.3 || Math.abs(e.y - (e.prevY || e.y)) > 0.3) {
+                e.animState = 'walk';
+            } else if (e.attackCd > 0.5) {
+                e.animState = 'attack';
+            } else {
+                e.animState = 'idle';
+            }
+            // Advance frame
+            if (e.animTimer > 0.15) { e.animTimer = 0; e.animFrame = (e.animFrame + 1) % 4; }
+
             // Contact damage
             if (closestDist < e.size + 12 && e.attackCd <= 0) {
                 for (const p of players) {
@@ -365,8 +402,8 @@ const Enemies = (() => {
                             e.attackCd = 0.8;
                             // Knockback with walkability check
                             const kbLen = Math.sqrt(pdx * pdx + pdy * pdy) || 1;
-                            const kbX = p.x + (pdx / kbLen) * 30;
-                            const kbY = p.y + (pdy / kbLen) * 30;
+                            const kbX = p.x + (pdx / kbLen) * 15;
+                            const kbY = p.y + (pdy / kbLen) * 15;
                             if (Dungeon.isWalkableBox(dungeon, kbX, kbY, 6)) {
                                 p.x = kbX; p.y = kbY;
                             } else if (Dungeon.isWalkableBox(dungeon, kbX, p.y, 6)) {
@@ -657,6 +694,661 @@ const Enemies = (() => {
         return 0;
     }
 
+    // ─── Pixel Sprite Definitions ───
+    // Each sprite is drawn with canvas fillRect at pixel scale (px=2)
+    // Defines body shape, limbs, features per frame
+    const SPRITES = {
+        // ─── DESERT ───
+        scarab: {
+            bodyColor: '#886622', accent: '#ccaa33',
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2, h = s * 0.6;
+                // Rounded shell body
+                ctx.fillStyle = f ? '#fff' : '#886622';
+                ctx.fillRect(sx - s/2 + px, sy - h/2, s - px*2, h);
+                ctx.fillRect(sx - s/2, sy - h/2 + px, s, h - px*2);
+                // Shell pattern
+                ctx.fillStyle = f ? '#fff' : '#ccaa33';
+                ctx.fillRect(sx - px, sy - h/2 + px, px*2, h - px*2);
+                // Eyes
+                ctx.fillStyle = '#ff4444';
+                ctx.fillRect(sx - px*2, sy - px, px, px);
+                ctx.fillRect(sx + px, sy - px, px, px);
+                // Legs animated
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 3 : 0;
+                ctx.fillStyle = f ? '#fff' : '#664411';
+                ctx.fillRect(sx - s/2 - px, sy + h/2 - px + lo, px, px*2);
+                ctx.fillRect(sx - s/2 + px*2, sy + h/2 - px - lo, px, px*2);
+                ctx.fillRect(sx + s/2 - px*2, sy + h/2 - px + lo, px, px*2);
+                ctx.fillRect(sx + s/2, sy + h/2 - px - lo, px, px*2);
+            }
+        },
+        mummy: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Body wrapped
+                ctx.fillStyle = f ? '#fff' : '#d4c8a0';
+                ctx.fillRect(sx - s*0.3, sy - s*0.5, s*0.6, s);
+                // Head
+                ctx.fillRect(sx - s*0.25, sy - s*0.65, s*0.5, s*0.3);
+                // Bandage lines
+                ctx.fillStyle = f ? '#fff' : '#b0a480';
+                for (let i = 0; i < 4; i++) {
+                    ctx.fillRect(sx - s*0.3, sy - s*0.4 + i * s*0.22, s*0.6, px);
+                }
+                // Eyes glowing
+                ctx.fillStyle = '#44ff88';
+                ctx.fillRect(sx - px*2, sy - s*0.55, px, px);
+                ctx.fillRect(sx + px, sy - s*0.55, px, px);
+                // Arms reaching out (animated)
+                const armOff = anim === 'walk' ? Math.sin(frame * Math.PI) * 4 : 0;
+                ctx.fillStyle = f ? '#fff' : '#d4c8a0';
+                ctx.fillRect(sx - s*0.3 - px*3, sy - s*0.1 + armOff, px*3, px*2);
+                ctx.fillRect(sx + s*0.3, sy - s*0.1 - armOff, px*3, px*2);
+            }
+        },
+        anubis_guard: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Tall body
+                ctx.fillStyle = f ? '#fff' : '#222255';
+                ctx.fillRect(sx - s*0.3, sy - s*0.6, s*0.6, s*1.1);
+                // Jackal head
+                ctx.fillStyle = f ? '#fff' : '#1a1a44';
+                ctx.fillRect(sx - s*0.25, sy - s*0.85, s*0.5, s*0.35);
+                // Snout
+                ctx.fillRect(sx - px, sy - s*0.75, px*4, px*2);
+                // Ears
+                ctx.fillRect(sx - s*0.25, sy - s*0.95, px*2, px*3);
+                ctx.fillRect(sx + s*0.25 - px*2, sy - s*0.95, px*2, px*3);
+                // Eyes
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillRect(sx - px*2, sy - s*0.8, px, px);
+                ctx.fillRect(sx + px, sy - s*0.8, px, px);
+                // Staff
+                const staffOff = anim === 'attack' ? -4 : 0;
+                ctx.fillStyle = '#ccaa00';
+                ctx.fillRect(sx + s*0.3 + px, sy - s*0.7 + staffOff, px, s*1.2);
+                ctx.fillRect(sx + s*0.3, sy - s*0.75 + staffOff, px*3, px*2);
+            }
+        },
+        // ─── UNDERWORLD ───
+        shade: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const bob = Math.sin(frame * Math.PI * 0.5) * 3;
+                // Wispy body (tapered bottom)
+                ctx.globalAlpha = 0.7;
+                ctx.fillStyle = f ? '#fff' : '#332244';
+                ctx.fillRect(sx - s*0.4, sy - s*0.5 + bob, s*0.8, s*0.5);
+                ctx.fillRect(sx - s*0.3, sy + bob, s*0.6, s*0.3);
+                ctx.fillRect(sx - s*0.2, sy + s*0.3 + bob, s*0.4, s*0.2);
+                ctx.globalAlpha = 1;
+                // Hollow eyes
+                ctx.fillStyle = '#8844cc';
+                ctx.fillRect(sx - px*2, sy - s*0.3 + bob, px*1.5, px*2);
+                ctx.fillRect(sx + px, sy - s*0.3 + bob, px*1.5, px*2);
+                // Wisps trailing
+                ctx.globalAlpha = 0.3;
+                ctx.fillStyle = '#6633aa';
+                ctx.fillRect(sx - s*0.5, sy + s*0.35 + bob, px*2, px*3);
+                ctx.fillRect(sx + s*0.3, sy + s*0.4 + bob, px*2, px*3);
+                ctx.globalAlpha = 1;
+            }
+        },
+        cerberus_pup: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 3 : 0;
+                // Body
+                ctx.fillStyle = f ? '#fff' : '#882222';
+                ctx.fillRect(sx - s*0.4, sy - s*0.2, s*0.8, s*0.5);
+                // Head
+                ctx.fillRect(sx + s*0.15, sy - s*0.5, s*0.35, s*0.4);
+                // Ears
+                ctx.fillRect(sx + s*0.15, sy - s*0.6, px*2, px*2);
+                ctx.fillRect(sx + s*0.4, sy - s*0.6, px*2, px*2);
+                // Eyes
+                ctx.fillStyle = '#ff6600';
+                ctx.fillRect(sx + s*0.25, sy - s*0.4, px, px);
+                ctx.fillRect(sx + s*0.38, sy - s*0.4, px, px);
+                // Legs
+                ctx.fillStyle = f ? '#fff' : '#661111';
+                ctx.fillRect(sx - s*0.3, sy + s*0.3 + lo, px*2, px*3);
+                ctx.fillRect(sx - s*0.05, sy + s*0.3 - lo, px*2, px*3);
+                ctx.fillRect(sx + s*0.15, sy + s*0.3 + lo, px*2, px*3);
+                // Tail
+                ctx.fillStyle = f ? '#fff' : '#882222';
+                ctx.fillRect(sx - s*0.45, sy - s*0.15 - lo, px*2, px);
+            }
+        },
+        fury: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const flapOff = Math.sin(frame * Math.PI) * 5;
+                // Body
+                ctx.fillStyle = f ? '#fff' : '#993355';
+                ctx.fillRect(sx - s*0.25, sy - s*0.3, s*0.5, s*0.7);
+                // Wings
+                ctx.fillStyle = f ? '#fff' : '#771144';
+                ctx.fillRect(sx - s*0.6, sy - s*0.4 - flapOff, s*0.3, s*0.5);
+                ctx.fillRect(sx + s*0.3, sy - s*0.4 - flapOff, s*0.3, s*0.5);
+                // Wing tips
+                ctx.fillRect(sx - s*0.65, sy - s*0.5 - flapOff, px*2, s*0.3);
+                ctx.fillRect(sx + s*0.55, sy - s*0.5 - flapOff, px*2, s*0.3);
+                // Head
+                ctx.fillStyle = f ? '#fff' : '#993355';
+                ctx.fillRect(sx - s*0.15, sy - s*0.5, s*0.3, s*0.25);
+                // Eyes
+                ctx.fillStyle = '#ff3366';
+                ctx.fillRect(sx - px*2, sy - s*0.4, px, px);
+                ctx.fillRect(sx + px, sy - s*0.4, px, px);
+                // Talons
+                ctx.fillStyle = '#ffcc44';
+                ctx.fillRect(sx - s*0.15, sy + s*0.4, px*2, px*2);
+                ctx.fillRect(sx + s*0.05, sy + s*0.4, px*2, px*2);
+            }
+        },
+        // ─── JUNGLE ───
+        vine_creep: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const wave = Math.sin(frame * Math.PI * 0.7) * 2;
+                // Central stem
+                ctx.fillStyle = f ? '#fff' : '#226622';
+                ctx.fillRect(sx - px*1.5, sy - s*0.6, px*3, s*1.2);
+                // Tendrils
+                ctx.fillStyle = f ? '#fff' : '#338833';
+                ctx.fillRect(sx - s*0.4 + wave, sy - s*0.3, s*0.3, px*2);
+                ctx.fillRect(sx + s*0.1 - wave, sy - s*0.1, s*0.3, px*2);
+                ctx.fillRect(sx - s*0.35, sy + s*0.15 - wave, s*0.25, px*2);
+                ctx.fillRect(sx + s*0.15 + wave, sy + s*0.3, s*0.25, px*2);
+                // Eyes in stem
+                ctx.fillStyle = '#ccff44';
+                ctx.fillRect(sx - px, sy - s*0.4, px, px);
+                ctx.fillRect(sx + px*0.5, sy - s*0.4, px, px);
+                // Thorns
+                ctx.fillStyle = '#114411';
+                ctx.fillRect(sx - px*2.5, sy - s*0.15, px, px);
+                ctx.fillRect(sx + px*2, sy + s*0.05, px, px);
+            }
+        },
+        spore_bloom: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const pulse = Math.sin(frame * Math.PI * 0.5) * 2;
+                // Stem
+                ctx.fillStyle = f ? '#fff' : '#446622';
+                ctx.fillRect(sx - px, sy, px*2, s*0.5);
+                // Mushroom cap
+                ctx.fillStyle = f ? '#fff' : '#bb4488';
+                ctx.fillRect(sx - s*0.35, sy - s*0.3 - pulse, s*0.7, s*0.4);
+                ctx.fillRect(sx - s*0.45, sy - s*0.15 - pulse, s*0.9, s*0.2);
+                // Spots
+                ctx.fillStyle = f ? '#fff' : '#dd88aa';
+                ctx.fillRect(sx - s*0.15, sy - s*0.2 - pulse, px*2, px*2);
+                ctx.fillRect(sx + s*0.1, sy - s*0.15 - pulse, px, px);
+                // Eyes under cap
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(sx - px*2, sy - px, px, px);
+                ctx.fillRect(sx + px, sy - px, px, px);
+                // Spore particles when attacking
+                if (anim === 'attack') {
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillStyle = '#ffccee';
+                    for (let i = 0; i < 3; i++) {
+                        const a = frame * 1.2 + i * 2.1;
+                        ctx.fillRect(sx + Math.cos(a) * s*0.6, sy - s*0.3 + Math.sin(a) * s*0.3, px, px);
+                    }
+                    ctx.globalAlpha = 1;
+                }
+            }
+        },
+        jungle_wyrm: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Serpentine body segments
+                ctx.fillStyle = f ? '#fff' : '#228844';
+                for (let i = 0; i < 5; i++) {
+                    const segOff = Math.sin(frame * Math.PI * 0.5 + i * 0.8) * 3;
+                    ctx.fillRect(sx - s*0.15 + segOff, sy - s*0.5 + i * s*0.22, s*0.3, s*0.2);
+                }
+                // Belly scales
+                ctx.fillStyle = f ? '#fff' : '#66cc88';
+                ctx.fillRect(sx - s*0.1, sy - s*0.3, s*0.2, s*0.6);
+                // Head
+                ctx.fillStyle = f ? '#fff' : '#116633';
+                ctx.fillRect(sx - s*0.2, sy - s*0.6, s*0.4, s*0.2);
+                // Eyes
+                ctx.fillStyle = '#ffff44';
+                ctx.fillRect(sx - px*2, sy - s*0.55, px, px);
+                ctx.fillRect(sx + px, sy - s*0.55, px, px);
+                // Fangs
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(sx - px, sy - s*0.42, px, px*2);
+                ctx.fillRect(sx + px*0.5, sy - s*0.42, px, px*2);
+            }
+        },
+        // ─── CELESTIAL ───
+        sentinel: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Armored body
+                ctx.fillStyle = f ? '#fff' : '#8899bb';
+                ctx.fillRect(sx - s*0.35, sy - s*0.4, s*0.7, s*0.9);
+                // Shoulder guards
+                ctx.fillStyle = f ? '#fff' : '#aabbdd';
+                ctx.fillRect(sx - s*0.45, sy - s*0.4, s*0.2, s*0.3);
+                ctx.fillRect(sx + s*0.25, sy - s*0.4, s*0.2, s*0.3);
+                // Helmet
+                ctx.fillStyle = f ? '#fff' : '#667799';
+                ctx.fillRect(sx - s*0.25, sy - s*0.6, s*0.5, s*0.25);
+                ctx.fillRect(sx - s*0.15, sy - s*0.65, s*0.3, px*2);
+                // Visor glow
+                ctx.fillStyle = '#66ccff';
+                ctx.fillRect(sx - s*0.15, sy - s*0.52, s*0.3, px*1.5);
+                // Legs
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 3 : 0;
+                ctx.fillStyle = f ? '#fff' : '#667799';
+                ctx.fillRect(sx - s*0.2, sy + s*0.5 + lo, s*0.15, s*0.15);
+                ctx.fillRect(sx + s*0.05, sy + s*0.5 - lo, s*0.15, s*0.15);
+            }
+        },
+        radiant_golem: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Large rocky body
+                ctx.fillStyle = f ? '#fff' : '#aa8844';
+                ctx.fillRect(sx - s*0.4, sy - s*0.4, s*0.8, s*0.9);
+                // Stone texture lines
+                ctx.fillStyle = f ? '#fff' : '#887733';
+                ctx.fillRect(sx - s*0.1, sy - s*0.3, px, s*0.7);
+                ctx.fillRect(sx - s*0.35, sy, s*0.7, px);
+                // Head
+                ctx.fillStyle = f ? '#fff' : '#ccaa55';
+                ctx.fillRect(sx - s*0.25, sy - s*0.55, s*0.5, s*0.2);
+                // Glowing core
+                ctx.fillStyle = '#ffdd44';
+                ctx.globalAlpha = 0.7 + Math.sin(frame * Math.PI) * 0.3;
+                ctx.fillRect(sx - s*0.12, sy - s*0.15, s*0.24, s*0.24);
+                ctx.globalAlpha = 1;
+                // Eyes
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillRect(sx - px*2.5, sy - s*0.5, px*1.5, px);
+                ctx.fillRect(sx + px, sy - s*0.5, px*1.5, px);
+                // Arms
+                const armOff = anim === 'attack' ? -5 : 0;
+                ctx.fillStyle = f ? '#fff' : '#998844';
+                ctx.fillRect(sx - s*0.55, sy - s*0.2 + armOff, s*0.15, s*0.5);
+                ctx.fillRect(sx + s*0.4, sy - s*0.2 + armOff, s*0.15, s*0.5);
+            }
+        },
+        seraph: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const flapOff = Math.sin(frame * Math.PI) * 4;
+                // Robed body
+                ctx.fillStyle = f ? '#fff' : '#ddddff';
+                ctx.fillRect(sx - s*0.2, sy - s*0.3, s*0.4, s*0.8);
+                ctx.fillRect(sx - s*0.3, sy + s*0.2, s*0.6, s*0.3);
+                // Wings (feathered)
+                ctx.fillStyle = f ? '#fff' : '#eeeeff';
+                ctx.fillRect(sx - s*0.7, sy - s*0.5 - flapOff, s*0.4, s*0.6);
+                ctx.fillRect(sx + s*0.3, sy - s*0.5 - flapOff, s*0.4, s*0.6);
+                // Wing feather details
+                ctx.fillStyle = '#ccccee';
+                ctx.fillRect(sx - s*0.65, sy - flapOff, s*0.3, px);
+                ctx.fillRect(sx + s*0.35, sy - flapOff, s*0.3, px);
+                // Head halo
+                ctx.fillStyle = '#ffff88';
+                ctx.globalAlpha = 0.6;
+                ctx.fillRect(sx - s*0.2, sy - s*0.55, s*0.4, px*2);
+                ctx.globalAlpha = 1;
+                // Face
+                ctx.fillStyle = f ? '#fff' : '#ccccee';
+                ctx.fillRect(sx - s*0.12, sy - s*0.5, s*0.24, s*0.2);
+                // Eyes
+                ctx.fillStyle = '#8888ff';
+                ctx.fillRect(sx - px*1.5, sy - s*0.42, px, px);
+                ctx.fillRect(sx + px*0.5, sy - s*0.42, px, px);
+            }
+        },
+        // ─── CYBER ───
+        drone: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const hover = Math.sin(frame * Math.PI * 0.5) * 2;
+                // Mechanical body
+                ctx.fillStyle = f ? '#fff' : '#556677';
+                ctx.fillRect(sx - s*0.35, sy - s*0.2 + hover, s*0.7, s*0.4);
+                // Rotors
+                const rot = frame * Math.PI * 0.8;
+                ctx.fillStyle = f ? '#fff' : '#334455';
+                ctx.fillRect(sx - s*0.5, sy - s*0.25 + hover, s*0.15, px*2);
+                ctx.fillRect(sx + s*0.35, sy - s*0.25 + hover, s*0.15, px*2);
+                // Eye/sensor
+                ctx.fillStyle = '#ff3333';
+                ctx.fillRect(sx - px, sy - s*0.05 + hover, px*2, px*2);
+                // Antenna
+                ctx.fillStyle = f ? '#fff' : '#778899';
+                ctx.fillRect(sx, sy - s*0.35 + hover, px, s*0.15);
+                ctx.fillRect(sx - px, sy - s*0.38 + hover, px*3, px);
+            }
+        },
+        turret: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Base
+                ctx.fillStyle = f ? '#fff' : '#445566';
+                ctx.fillRect(sx - s*0.4, sy + s*0.1, s*0.8, s*0.4);
+                // Body
+                ctx.fillStyle = f ? '#fff' : '#556677';
+                ctx.fillRect(sx - s*0.3, sy - s*0.2, s*0.6, s*0.4);
+                // Barrel
+                const barrelKick = anim === 'attack' ? -3 : 0;
+                ctx.fillStyle = f ? '#fff' : '#667788';
+                ctx.fillRect(sx - px*1.5, sy - s*0.45 + barrelKick, px*3, s*0.3);
+                ctx.fillRect(sx - px*2.5, sy - s*0.5 + barrelKick, px*5, px*2);
+                // Targeting light
+                ctx.fillStyle = anim === 'attack' ? '#ff0000' : '#ff6600';
+                ctx.fillRect(sx - px, sy - s*0.1, px*2, px*2);
+                // Bolts
+                ctx.fillStyle = '#888';
+                ctx.fillRect(sx - s*0.25, sy - s*0.05, px, px);
+                ctx.fillRect(sx + s*0.2, sy - s*0.05, px, px);
+            }
+        },
+        virus: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const pulse = Math.sin(frame * Math.PI * 0.6) * 2;
+                // Blobby body
+                ctx.fillStyle = f ? '#fff' : '#44bb66';
+                ctx.fillRect(sx - s*0.3 - pulse, sy - s*0.3 - pulse, s*0.6 + pulse*2, s*0.6 + pulse*2);
+                ctx.fillRect(sx - s*0.4, sy - s*0.15, s*0.8, s*0.3);
+                ctx.fillRect(sx - s*0.15, sy - s*0.4, s*0.3, s*0.8);
+                // Darker spots
+                ctx.fillStyle = f ? '#fff' : '#339955';
+                ctx.fillRect(sx - s*0.1, sy - s*0.15, px*2, px*2);
+                ctx.fillRect(sx + s*0.1, sy + s*0.05, px, px);
+                // Eyes
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(sx - px*2, sy - px*1.5, px*1.5, px*1.5);
+                ctx.fillRect(sx + px*0.5, sy - px*1.5, px*1.5, px*1.5);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(sx - px*1.5, sy - px, px, px);
+                ctx.fillRect(sx + px, sy - px, px, px);
+            }
+        },
+        // ─── CRYPT ───
+        skeleton: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 3 : 0;
+                // Ribcage body
+                ctx.fillStyle = f ? '#fff' : '#ddddcc';
+                ctx.fillRect(sx - s*0.2, sy - s*0.3, s*0.4, s*0.5);
+                // Ribs
+                ctx.fillStyle = f ? '#fff' : '#bbbbaa';
+                for (let i = 0; i < 3; i++) {
+                    ctx.fillRect(sx - s*0.25, sy - s*0.2 + i * px*3, s*0.5, px);
+                }
+                // Skull
+                ctx.fillStyle = f ? '#fff' : '#eeeecc';
+                ctx.fillRect(sx - s*0.2, sy - s*0.55, s*0.4, s*0.3);
+                ctx.fillRect(sx - s*0.15, sy - s*0.6, s*0.3, px*2);
+                // Eye sockets
+                ctx.fillStyle = '#000';
+                ctx.fillRect(sx - px*2.5, sy - s*0.45, px*2, px*2);
+                ctx.fillRect(sx + px*0.5, sy - s*0.45, px*2, px*2);
+                // Jaw
+                ctx.fillStyle = f ? '#fff' : '#ccccbb';
+                ctx.fillRect(sx - s*0.12, sy - s*0.27, s*0.24, px*2);
+                // Arms (bone segments)
+                ctx.fillStyle = f ? '#fff' : '#ddddcc';
+                ctx.fillRect(sx - s*0.35, sy - s*0.15, s*0.12, px*2);
+                ctx.fillRect(sx + s*0.23, sy - s*0.15, s*0.12, px*2);
+                // Legs
+                ctx.fillRect(sx - s*0.15, sy + s*0.2 + lo, px*2, s*0.25);
+                ctx.fillRect(sx + s*0.05, sy + s*0.2 - lo, px*2, s*0.25);
+            }
+        },
+        wraith: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const bob = Math.sin(frame * Math.PI * 0.4) * 3;
+                // Hood
+                ctx.fillStyle = f ? '#fff' : '#222233';
+                ctx.fillRect(sx - s*0.3, sy - s*0.6 + bob, s*0.6, s*0.35);
+                ctx.fillRect(sx - s*0.35, sy - s*0.45 + bob, s*0.7, s*0.2);
+                // Robed body (fading)
+                ctx.globalAlpha = 0.8;
+                ctx.fillStyle = f ? '#fff' : '#1a1a2e';
+                ctx.fillRect(sx - s*0.25, sy - s*0.25 + bob, s*0.5, s*0.55);
+                ctx.globalAlpha = 0.5;
+                ctx.fillRect(sx - s*0.2, sy + s*0.3 + bob, s*0.4, s*0.2);
+                ctx.globalAlpha = 0.3;
+                ctx.fillRect(sx - s*0.15, sy + s*0.5 + bob, s*0.3, s*0.15);
+                ctx.globalAlpha = 1;
+                // Glowing eyes
+                ctx.fillStyle = '#66ffff';
+                ctx.fillRect(sx - px*2, sy - s*0.45 + bob, px*1.5, px);
+                ctx.fillRect(sx + px*0.5, sy - s*0.45 + bob, px*1.5, px);
+                // Trailing wisps
+                ctx.globalAlpha = 0.3;
+                ctx.fillStyle = '#4444ff';
+                ctx.fillRect(sx - px, sy + s*0.6 + bob, px, px*2);
+                ctx.fillRect(sx + px*0.5, sy + s*0.65 + bob, px, px);
+                ctx.globalAlpha = 1;
+            }
+        },
+        gargoyle: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const wingOff = anim === 'walk' ? Math.sin(frame * Math.PI) * 4 : 0;
+                // Stone body
+                ctx.fillStyle = f ? '#fff' : '#778888';
+                ctx.fillRect(sx - s*0.3, sy - s*0.3, s*0.6, s*0.7);
+                // Stone wings
+                ctx.fillStyle = f ? '#fff' : '#667777';
+                ctx.fillRect(sx - s*0.6, sy - s*0.4 - wingOff, s*0.25, s*0.5);
+                ctx.fillRect(sx + s*0.35, sy - s*0.4 - wingOff, s*0.25, s*0.5);
+                // Head with horns
+                ctx.fillStyle = f ? '#fff' : '#889999';
+                ctx.fillRect(sx - s*0.2, sy - s*0.5, s*0.4, s*0.25);
+                // Horns
+                ctx.fillStyle = f ? '#fff' : '#556666';
+                ctx.fillRect(sx - s*0.25, sy - s*0.6, px*2, px*3);
+                ctx.fillRect(sx + s*0.2, sy - s*0.6, px*2, px*3);
+                // Eyes
+                ctx.fillStyle = '#ff4400';
+                ctx.fillRect(sx - px*2, sy - s*0.42, px, px);
+                ctx.fillRect(sx + px, sy - s*0.42, px, px);
+                // Claws
+                ctx.fillStyle = '#aabbbb';
+                ctx.fillRect(sx - s*0.25, sy + s*0.4, px*2, px*2);
+                ctx.fillRect(sx + s*0.15, sy + s*0.4, px*2, px*2);
+            }
+        },
+        blink_imp: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const hop = anim === 'walk' ? Math.abs(Math.sin(frame * Math.PI)) * 4 : 0;
+                // Small demon body
+                ctx.fillStyle = f ? '#fff' : '#bb33cc';
+                ctx.fillRect(sx - s*0.3, sy - s*0.25 - hop, s*0.6, s*0.5);
+                // Pointy head
+                ctx.fillRect(sx - s*0.2, sy - s*0.45 - hop, s*0.4, s*0.25);
+                ctx.fillRect(sx - s*0.1, sy - s*0.55 - hop, s*0.2, px*2);
+                // Horns
+                ctx.fillStyle = f ? '#fff' : '#881199';
+                ctx.fillRect(sx - s*0.25, sy - s*0.5 - hop, px*2, px*3);
+                ctx.fillRect(sx + s*0.15, sy - s*0.5 - hop, px*2, px*3);
+                // Big eyes
+                ctx.fillStyle = '#ffff00';
+                ctx.fillRect(sx - px*2.5, sy - s*0.35 - hop, px*2, px*2);
+                ctx.fillRect(sx + px*0.5, sy - s*0.35 - hop, px*2, px*2);
+                // Tail
+                ctx.fillStyle = f ? '#fff' : '#9922aa';
+                ctx.fillRect(sx - s*0.35, sy + s*0.1 - hop, px*2, px);
+                ctx.fillRect(sx - s*0.4, sy + s*0.05 - hop, px, px*2);
+                // Tiny feet
+                ctx.fillStyle = '#660088';
+                ctx.fillRect(sx - s*0.15, sy + s*0.25, px*2, px*2);
+                ctx.fillRect(sx + s*0.05, sy + s*0.25, px*2, px*2);
+            }
+        },
+        mirror_knight: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 3 : 0;
+                // Armored body (reflective)
+                ctx.fillStyle = f ? '#fff' : '#aabbcc';
+                ctx.fillRect(sx - s*0.3, sy - s*0.4, s*0.6, s*0.85);
+                // Shiny highlight
+                ctx.fillStyle = '#ddeeff';
+                ctx.fillRect(sx - s*0.1, sy - s*0.3, s*0.15, s*0.5);
+                // Helmet
+                ctx.fillStyle = f ? '#fff' : '#8899aa';
+                ctx.fillRect(sx - s*0.25, sy - s*0.6, s*0.5, s*0.25);
+                // Visor slit
+                ctx.fillStyle = '#334455';
+                ctx.fillRect(sx - s*0.15, sy - s*0.5, s*0.3, px*1.5);
+                // Eyes behind visor
+                ctx.fillStyle = '#66ddff';
+                ctx.fillRect(sx - px*2, sy - s*0.48, px, px);
+                ctx.fillRect(sx + px, sy - s*0.48, px, px);
+                // Shield
+                ctx.fillStyle = f ? '#fff' : '#99aabb';
+                ctx.fillRect(sx - s*0.5, sy - s*0.3, s*0.18, s*0.5);
+                ctx.fillStyle = '#bbccdd';
+                ctx.fillRect(sx - s*0.47, sy - s*0.15, s*0.12, s*0.15);
+                // Sword
+                const swordOff = anim === 'attack' ? -6 : 0;
+                ctx.fillStyle = '#cccccc';
+                ctx.fillRect(sx + s*0.35, sy - s*0.5 + swordOff, px*2, s*0.6);
+                ctx.fillStyle = '#888';
+                ctx.fillRect(sx + s*0.3, sy - s*0.15, px*4, px*2);
+                // Legs
+                ctx.fillStyle = f ? '#fff' : '#8899aa';
+                ctx.fillRect(sx - s*0.2, sy + s*0.45 + lo, px*3, s*0.15);
+                ctx.fillRect(sx + s*0.05, sy + s*0.45 - lo, px*3, s*0.15);
+            }
+        },
+        necro_acolyte: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Dark robe
+                ctx.fillStyle = f ? '#fff' : '#2a1a3a';
+                ctx.fillRect(sx - s*0.25, sy - s*0.3, s*0.5, s*0.8);
+                ctx.fillRect(sx - s*0.35, sy + s*0.2, s*0.7, s*0.3);
+                // Hood
+                ctx.fillStyle = f ? '#fff' : '#1a0a2a';
+                ctx.fillRect(sx - s*0.25, sy - s*0.55, s*0.5, s*0.3);
+                ctx.fillRect(sx - s*0.3, sy - s*0.4, s*0.6, s*0.15);
+                // Eyes
+                ctx.fillStyle = '#aa44ff';
+                ctx.fillRect(sx - px*2, sy - s*0.42, px, px);
+                ctx.fillRect(sx + px, sy - s*0.42, px, px);
+                // Staff with skull
+                const staffGlow = Math.sin(frame * Math.PI) * 0.3;
+                ctx.fillStyle = '#554433';
+                ctx.fillRect(sx + s*0.3, sy - s*0.6, px*1.5, s*1.1);
+                ctx.fillStyle = '#bbbbaa';
+                ctx.fillRect(sx + s*0.25, sy - s*0.7, px*4, px*3);
+                ctx.fillStyle = '#000';
+                ctx.fillRect(sx + s*0.28, sy - s*0.67, px, px);
+                // Summoning glow
+                if (anim === 'attack') {
+                    ctx.globalAlpha = 0.4 + staffGlow;
+                    ctx.fillStyle = '#aa44ff';
+                    ctx.fillRect(sx - s*0.15, sy + s*0.4, s*0.3, px*3);
+                    ctx.globalAlpha = 1;
+                }
+            }
+        },
+        charger: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                const lo = anim === 'walk' ? Math.sin(frame * Math.PI) * 4 : 0;
+                // Bulky body
+                ctx.fillStyle = f ? '#fff' : '#884422';
+                ctx.fillRect(sx - s*0.4, sy - s*0.25, s*0.8, s*0.5);
+                // Head (lowered for charging)
+                const headOff = anim === 'attack' ? 4 : 0;
+                ctx.fillStyle = f ? '#fff' : '#773311';
+                ctx.fillRect(sx + s*0.15, sy - s*0.45 + headOff, s*0.35, s*0.3);
+                // Horns
+                ctx.fillStyle = f ? '#fff' : '#ccbb88';
+                ctx.fillRect(sx + s*0.45, sy - s*0.55 + headOff, px*3, px*2);
+                ctx.fillRect(sx + s*0.45, sy - s*0.35 + headOff, px*3, px*2);
+                // Eye
+                ctx.fillStyle = '#ff3300';
+                ctx.fillRect(sx + s*0.35, sy - s*0.35 + headOff, px, px);
+                // Legs
+                ctx.fillStyle = f ? '#fff' : '#663311';
+                ctx.fillRect(sx - s*0.3, sy + s*0.25 + lo, px*3, s*0.2);
+                ctx.fillRect(sx - s*0.05, sy + s*0.25 - lo, px*3, s*0.2);
+                ctx.fillRect(sx + s*0.15, sy + s*0.25 + lo, px*3, s*0.2);
+                // Dust when charging
+                if (anim === 'attack') {
+                    ctx.globalAlpha = 0.4;
+                    ctx.fillStyle = '#aa8866';
+                    ctx.fillRect(sx - s*0.55, sy + s*0.3, px*3, px*2);
+                    ctx.fillRect(sx - s*0.6, sy + s*0.2, px*2, px);
+                    ctx.globalAlpha = 1;
+                }
+            }
+        },
+        shaman: {
+            draw(ctx, sx, sy, s, f, frame, anim) {
+                const px = 2;
+                // Tribal robe
+                ctx.fillStyle = f ? '#fff' : '#335544';
+                ctx.fillRect(sx - s*0.25, sy - s*0.3, s*0.5, s*0.8);
+                // Feather headdress
+                ctx.fillStyle = f ? '#fff' : '#22aa44';
+                ctx.fillRect(sx - s*0.2, sy - s*0.55, s*0.4, s*0.3);
+                // Feathers
+                ctx.fillStyle = '#44cc66';
+                ctx.fillRect(sx - s*0.15, sy - s*0.7, px*2, px*4);
+                ctx.fillRect(sx, sy - s*0.7, px*2, px*4);
+                ctx.fillStyle = '#ff6644';
+                ctx.fillRect(sx - s*0.08, sy - s*0.75, px*2, px*3);
+                // Face
+                ctx.fillStyle = '#88aa77';
+                ctx.fillRect(sx - s*0.12, sy - s*0.45, s*0.24, s*0.15);
+                // Eyes
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(sx - px*2, sy - s*0.42, px, px);
+                ctx.fillRect(sx + px, sy - s*0.42, px, px);
+                // Staff with gems
+                ctx.fillStyle = '#664422';
+                ctx.fillRect(sx - s*0.35, sy - s*0.4, px*1.5, s*0.9);
+                // Healing glow
+                if (anim === 'attack') {
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillStyle = '#44ff88';
+                    ctx.fillRect(sx - s*0.4, sy - s*0.45, px*4, px*4);
+                    ctx.globalAlpha = 1;
+                } else {
+                    ctx.fillStyle = '#44cc88';
+                    ctx.fillRect(sx - s*0.38, sy - s*0.42, px*2, px*2);
+                }
+            }
+        },
+    };
+
+    // Fallback for any enemy type not in SPRITES
+    function drawFallbackSprite(ctx, sx, sy, s, f, frame, anim, color) {
+        const px = 2;
+        ctx.fillStyle = f ? '#fff' : color;
+        ctx.fillRect(sx - s/2, sy - s/2, s, s);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(sx - 3, sy - 2, 2, 2);
+        ctx.fillRect(sx + 1, sy - 2, 2, 2);
+    }
+
     function render(ctx, cameraX, cameraY) {
         const ZOOM = Dungeon.ZOOM || 1;
 
@@ -666,9 +1358,9 @@ const Enemies = (() => {
         for (const e of enemies) {
             if (!e.alive) continue;
             const sx = e.x - cameraX, sy = e.y - cameraY;
-            if (sx < -50 || sx > 1010 || sy < -50 || sy > 590) continue;
+            if (sx < -60 || sx > 1020 || sy < -60 || sy > 600) continue;
 
-            // Skip enemies still spawning (fade in)
+            // Spawn fade-in
             if (e.spawnTimer > 0) {
                 ctx.globalAlpha = Math.max(0, 1 - e.spawnTimer * 2);
             }
@@ -679,52 +1371,75 @@ const Enemies = (() => {
             // Shadow
             ctx.globalAlpha = (e.spawnTimer > 0 ? 0.1 : 0.3);
             ctx.fillStyle = '#000';
-            ctx.fillRect(sx - s/2, sy + s/2, s, 3);
+            ctx.beginPath();
+            ctx.ellipse(sx, sy + s/2 + 2, s * 0.4, 3, 0, 0, Math.PI * 2);
+            ctx.fill();
             ctx.globalAlpha = e.spawnTimer > 0 ? Math.max(0, 1 - e.spawnTimer * 2) : 1;
 
-            // Body
-            ctx.fillStyle = flash ? '#fff' : e.color;
-            if (e.isBoss) {
-                ctx.fillRect(sx - s/2, sy - s/2, s, s);
-                ctx.fillRect(sx - s/2 - 2, sy - s/2 - 4, 4, 4);
-                ctx.fillRect(sx + s/2 - 2, sy - s/2 - 4, 4, 4);
-                ctx.fillStyle = flash ? '#fff' : '#ff0000';
-                ctx.fillRect(sx - 4, sy - 3, 3, 3);
-                ctx.fillRect(sx + 2, sy - 3, 3, 3);
-                ctx.globalAlpha = 0.1 + Math.sin(performance.now() / 200) * 0.05;
-                ctx.fillStyle = e.color;
-                ctx.fillRect(sx - s, sy - s, s * 2, s * 2);
-                ctx.globalAlpha = 1;
+            // Flip based on facing
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.scale(e.facing, 1);
+            ctx.translate(-sx, -sy);
+
+            // Draw sprite using the SPRITES lookup
+            const spriteData = SPRITES[e.name];
+            if (spriteData) {
+                spriteData.draw(ctx, sx, sy, s, flash, e.animFrame, e.animState);
             } else {
-                ctx.fillRect(sx - s/2, sy - s/2, s, s);
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(sx - 3, sy - 2, 2, 2);
-                ctx.fillRect(sx + 1, sy - 2, 2, 2);
+                drawFallbackSprite(ctx, sx, sy, s, flash, e.animFrame, e.animState, e.color);
+            }
+
+            ctx.restore();
+
+            // Boss aura glow
+            if (e.isBoss || e.isMiniboss) {
+                ctx.globalAlpha = 0.08 + Math.sin(performance.now() / 200) * 0.04;
+                ctx.fillStyle = e.color;
+                ctx.beginPath();
+                ctx.arc(sx, sy, s * 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                // Boss name label
+                ctx.fillStyle = '#ffcc44';
+                ctx.font = '7px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(e.name.replace(/_/g, ' ').toUpperCase(), sx, sy - s/2 - 12);
             }
 
             // HP bar
             if (e.hp < e.maxHp) {
-                const barW = Math.max(s, 20);
+                const barW = Math.max(s + 4, 22);
                 const hpPct = e.hp / e.maxHp;
-                ctx.fillStyle = '#333';
-                ctx.fillRect(sx - barW/2, sy - s/2 - 6, barW, 3);
+                ctx.fillStyle = '#111';
+                ctx.fillRect(sx - barW/2 - 1, sy - s/2 - 8, barW + 2, 5);
                 ctx.fillStyle = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#cccc44' : '#cc4444';
-                ctx.fillRect(sx - barW/2, sy - s/2 - 6, barW * hpPct, 3);
+                ctx.fillRect(sx - barW/2, sy - s/2 - 7, barW * hpPct, 3);
             }
 
             ctx.globalAlpha = 1;
         }
 
-        // Render projectiles
+        // Render projectiles (improved)
         for (const fx of effects) {
             if (fx.type === 'projectile' && fx.owner === 'enemy') {
                 const sx = fx.x - cameraX, sy = fx.y - cameraY;
-                ctx.globalAlpha = 0.3;
+                // Glow
+                ctx.globalAlpha = 0.25;
                 ctx.fillStyle = fx.color;
-                ctx.fillRect(sx - fx.size * 1.5, sy - fx.size * 1.5, fx.size * 3, fx.size * 3);
+                ctx.beginPath();
+                ctx.arc(sx, sy, fx.size * 2.5, 0, Math.PI * 2);
+                ctx.fill();
+                // Core
                 ctx.globalAlpha = 0.9;
                 ctx.fillStyle = '#fff';
                 ctx.fillRect(sx - fx.size/2, sy - fx.size/2, fx.size, fx.size);
+                // Color ring
+                ctx.globalAlpha = 0.7;
+                ctx.fillStyle = fx.color;
+                ctx.fillRect(sx - fx.size, sy - fx.size, fx.size * 2, fx.size * 2);
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(sx - fx.size * 0.4, sy - fx.size * 0.4, fx.size * 0.8, fx.size * 0.8);
                 ctx.globalAlpha = 1;
             }
         }
@@ -739,7 +1454,7 @@ const Enemies = (() => {
 
     return {
         TYPES, BOSSES, reset, spawnFromDungeon, update, render,
-        damageEnemy, getShake, addShake,
+        damageEnemy, getShake, addShake, seedRandom,
         getEnemies: () => enemies,
         getEffects: () => effects,
     };

@@ -17,8 +17,8 @@ const Campaign = (() => {
     const PLAYER_RADIUS = 6;
 
     // Melee constants
-    const MELEE_RANGE = 40;
-    const MELEE_ARC = Math.PI * 0.6; // 108 degree cone
+    const MELEE_RANGE = 70;
+    const MELEE_ARC = Math.PI * 0.75; // 135 degree cone
     const MELEE_COOLDOWN = 0.35;
     const MELEE_DURATION = 0.15;
 
@@ -51,6 +51,17 @@ const Campaign = (() => {
     let allyMelees = []; // { x, y, angle, timer }
     let lastSpellCast = -1; // Track spell spam
     let spamCount = 0;
+
+    // Bot party system
+    let bots = []; // Array of bot objects (also pushed to allies)
+    let botIdCounter = 0;
+    const BOT_COLORS = [
+        { body: '#cc66ff', accent: '#ddaaff', name: 'Violet' },
+        { body: '#ffaa44', accent: '#ffcc88', name: 'Amber' },
+        { body: '#44ddcc', accent: '#88ffee', name: 'Teal' },
+        { body: '#ff6688', accent: '#ffaacc', name: 'Rose' },
+    ];
+    const BOT_THINK_RATE = 0.3; // Seconds between AI decisions
 
     // Level & Skill system (persists across floors)
     let playerLevel = 1;
@@ -160,6 +171,22 @@ const Campaign = (() => {
         };
 
         allies = [];
+        // Re-add bots to allies after floor transition
+        for (const bot of bots) {
+            bot.x = player.x + (Math.random() - 0.5) * 40;
+            bot.y = player.y + (Math.random() - 0.5) * 40;
+            bot.hp = bot.maxHp;
+            bot.mana = getMaxMana();
+            bot.dashing = false;
+            bot.dashCooldown = 0;
+            bot.aiThinkTimer = Math.random() * BOT_THINK_RATE;
+            bot.aiTargetX = bot.x;
+            bot.aiTargetY = bot.y;
+            bot.castCooldown = 1 + Math.random();
+            bot.meleeCooldown = 0;
+            bot.hitFlash = 0;
+            allies.push(bot);
+        }
         playerSpells = compiledSpells;
         playerCasts = [];
         allyCasts = [];
@@ -225,6 +252,12 @@ const Campaign = (() => {
         if (floorIntroTimer > 0) floorIntroTimer -= dt;
 
         if (hitFreeze > 0) { hitFreeze -= dt; return; }
+
+        // ── NaN GUARD ──
+        if (isNaN(player.x) || isNaN(player.y)) {
+            player.x = currentDungeon.startX * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2;
+            player.y = currentDungeon.startY * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2;
+        }
 
         // ── STUCK DETECTION ──
         if (!Dungeon.isWalkableBox(currentDungeon, player.x, player.y, PLAYER_RADIUS)) {
@@ -345,6 +378,11 @@ const Campaign = (() => {
             allyMelees[i].timer -= dt;
             if (allyMelees[i].timer <= 0) allyMelees.splice(i, 1);
         }
+
+        // Update bot AI
+        updateBots(dt);
+        // Update bot HUD periodically
+        if (bots.length > 0 && Math.random() < 0.1) updateBotHUD();
 
         // Spell cooldowns
         for (const s of playerSpells) { if (s.currentCooldown > 0) s.currentCooldown -= dt; }
@@ -856,9 +894,12 @@ const Campaign = (() => {
         ctx.globalAlpha = 1;
         ctx.restore();
 
-        // Allies
+        // Allies (including bots)
         for (const ally of allies) {
-            renderCampaignMage(ctx, ally, cam, ZOOM, '#44cc66', '#88ff88');
+            if (ally.hp <= 0) continue; // Don't render dead bots
+            const bodyCol = ally.botColor || '#44cc66';
+            const accCol = ally.botAccent || '#88ff88';
+            renderCampaignMage(ctx, ally, cam, ZOOM, bodyCol, accCol);
         }
 
         // Player
@@ -1443,11 +1484,301 @@ const Campaign = (() => {
     }
     function onMouseUp() {}
 
+    // ── BOT AI SYSTEM ──
+    function addBot() {
+        if (bots.length >= 4) return; // Max 4 bots
+        const colorSet = BOT_COLORS[bots.length % BOT_COLORS.length];
+        botIdCounter++;
+        const bot = {
+            id: 'bot_' + botIdCounter,
+            isBot: true,
+            botName: colorSet.name,
+            botColor: colorSet.body,
+            botAccent: colorSet.accent,
+            x: player ? player.x + (Math.random() - 0.5) * 40 : 480,
+            y: player ? player.y + (Math.random() - 0.5) * 40 : 270,
+            hp: getMaxHP(),
+            maxHp: getMaxHP(),
+            mana: getMaxMana(),
+            hitRadius: 10,
+            hitFlash: 0,
+            speed: getSpeed(),
+            dashing: false,
+            dashCooldown: 0,
+            dashDirX: 0, dashDirY: 0,
+            invulnTimer: 0,
+            level: playerLevel,
+            // AI state
+            aiThinkTimer: Math.random() * BOT_THINK_RATE,
+            aiTargetX: 0, aiTargetY: 0,
+            aiState: 'follow', // follow, fight, retreat, heal
+            castCooldown: 1 + Math.random(),
+            meleeCooldown: 0,
+        };
+        bots.push(bot);
+        if (allies.indexOf(bot) === -1) allies.push(bot);
+        ArconSystem.onManaReturn(bot.id, (count) => {
+            bot.mana = Math.min(getMaxMana(), bot.mana + count);
+        });
+        updateBotHUD();
+    }
+
+    function removeBot() {
+        if (bots.length === 0) return;
+        const bot = bots.pop();
+        const idx = allies.indexOf(bot);
+        if (idx >= 0) allies.splice(idx, 1);
+        updateBotHUD();
+    }
+
+    function updateBots(dt) {
+        for (const bot of bots) {
+            if (bot.hp <= 0) {
+                // Dead bot: respawn after 5 seconds with half HP
+                bot.deathTimer = (bot.deathTimer || 0) + dt;
+                if (bot.deathTimer >= 5) {
+                    bot.hp = Math.floor(bot.maxHp * 0.5);
+                    bot.mana = Math.floor(getMaxMana() * 0.3);
+                    bot.x = player.x + (Math.random() - 0.5) * 30;
+                    bot.y = player.y + (Math.random() - 0.5) * 30;
+                    bot.deathTimer = 0;
+                }
+                continue;
+            }
+
+            // Mana regen
+            bot.mana = Math.min(getMaxMana(), bot.mana + dt * 3);
+            bot.maxHp = getMaxHP();
+            bot.level = playerLevel;
+            bot.speed = getSpeed();
+
+            // Invuln and flash timers
+            if (bot.invulnTimer > 0) bot.invulnTimer -= dt;
+            if (bot.hitFlash > 0) bot.hitFlash -= dt;
+            if (bot.dashCooldown > 0) bot.dashCooldown -= dt;
+            if (bot.castCooldown > 0) bot.castCooldown -= dt;
+            if (bot.meleeCooldown > 0) bot.meleeCooldown -= dt;
+
+            // AI thinking
+            bot.aiThinkTimer -= dt;
+            if (bot.aiThinkTimer <= 0) {
+                bot.aiThinkTimer = BOT_THINK_RATE + Math.random() * 0.1;
+                botThink(bot);
+            }
+
+            // Move toward AI target
+            const tdx = bot.aiTargetX - bot.x;
+            const tdy = bot.aiTargetY - bot.y;
+            const tDist = Math.sqrt(tdx * tdx + tdy * tdy);
+            if (tDist > 8) {
+                const moveSpeed = bot.speed * dt;
+                const ndx = tdx / tDist;
+                const ndy = tdy / tDist;
+                const nx = bot.x + ndx * moveSpeed;
+                const ny = bot.y + ndy * moveSpeed;
+                if (currentDungeon && Dungeon.isWalkableBox(currentDungeon, nx, ny, 5)) {
+                    bot.x = nx; bot.y = ny;
+                } else if (currentDungeon && Dungeon.isWalkableBox(currentDungeon, nx, bot.y, 5)) {
+                    bot.x = nx;
+                } else if (currentDungeon && Dungeon.isWalkableBox(currentDungeon, bot.x, ny, 5)) {
+                    bot.y = ny;
+                }
+            }
+
+            // NaN guard
+            if (isNaN(bot.x) || isNaN(bot.y)) {
+                bot.x = player.x; bot.y = player.y;
+            }
+
+            // World bounds
+            if (currentDungeon) {
+                const b = Dungeon.enforceWorldBounds(bot.x, bot.y, currentDungeon);
+                bot.x = b.x; bot.y = b.y;
+            }
+        }
+    }
+
+    function botThink(bot) {
+        const enemies = Enemies.getEnemies().filter(e => e.alive);
+        let nearestEnemy = null, nearestDist = Infinity;
+        for (const e of enemies) {
+            const dx = e.x - bot.x, dy = e.y - bot.y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < nearestDist) { nearestDist = d; nearestEnemy = e; }
+        }
+
+        const hpPct = bot.hp / bot.maxHp;
+
+        // State decision
+        if (hpPct < 0.25 && nearestDist < 120) {
+            bot.aiState = 'retreat';
+        } else if (nearestEnemy && nearestDist < 200) {
+            bot.aiState = 'fight';
+        } else {
+            bot.aiState = 'follow';
+        }
+
+        switch (bot.aiState) {
+            case 'follow': {
+                // Follow player at offset distance
+                const angle = Math.random() * Math.PI * 2;
+                bot.aiTargetX = player.x + Math.cos(angle) * 40;
+                bot.aiTargetY = player.y + Math.sin(angle) * 40;
+                break;
+            }
+            case 'fight': {
+                if (!nearestEnemy) break;
+                // Move to attack range
+                const dx = nearestEnemy.x - bot.x;
+                const dy = nearestEnemy.y - bot.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+                if (dist < 60) {
+                    // Close enough to melee
+                    if (bot.meleeCooldown <= 0) {
+                        botDoMelee(bot, nearestEnemy);
+                    }
+                    // Strafe around enemy
+                    const perpAngle = Math.atan2(dy, dx) + (Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2);
+                    bot.aiTargetX = bot.x + Math.cos(perpAngle) * 50;
+                    bot.aiTargetY = bot.y + Math.sin(perpAngle) * 50;
+                } else {
+                    // Move toward enemy
+                    bot.aiTargetX = nearestEnemy.x - (dx / dist) * 45;
+                    bot.aiTargetY = nearestEnemy.y - (dy / dist) * 45;
+                }
+
+                // Cast spells at range
+                if (bot.castCooldown <= 0 && dist < 180 && bot.mana >= 10 && playerSpells.length > 0) {
+                    botCastSpell(bot, nearestEnemy);
+                }
+                break;
+            }
+            case 'retreat': {
+                // Run away from nearest enemy, toward player
+                if (nearestEnemy) {
+                    const dx = bot.x - nearestEnemy.x;
+                    const dy = bot.y - nearestEnemy.y;
+                    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+                    bot.aiTargetX = bot.x + (dx / d) * 80;
+                    bot.aiTargetY = bot.y + (dy / d) * 80;
+                } else {
+                    bot.aiTargetX = player.x;
+                    bot.aiTargetY = player.y;
+                }
+                // Emergency dash
+                if (hpPct < 0.15 && bot.dashCooldown <= 0 && nearestDist < 80) {
+                    botDash(bot, nearestEnemy);
+                }
+                break;
+            }
+        }
+    }
+
+    function botDoMelee(bot, target) {
+        const angle = Math.atan2(target.y - bot.y, target.x - bot.x);
+        bot.meleeCooldown = MELEE_COOLDOWN + Math.random() * 0.2;
+
+        // Damage enemies in arc
+        const meleeDmg = getMeleeDmg();
+        for (const e of Enemies.getEnemies()) {
+            if (!e.alive) continue;
+            const dx = e.x - bot.x, dy = e.y - bot.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > MELEE_RANGE) continue;
+            const eAngle = Math.atan2(dy, dx);
+            let angleDiff = eAngle - angle;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            if (Math.abs(angleDiff) <= MELEE_ARC / 2) {
+                const xp = Enemies.damageEnemy(e, meleeDmg, bot.x, bot.y, 20);
+                if (xp > 0) {
+                    xpGained += xp;
+                    playerXP += xp;
+                }
+            }
+        }
+
+        // Visual melee arc
+        allyMelees.push({ x: bot.x, y: bot.y, angle, timer: MELEE_DURATION });
+
+        // Particles
+        for (let i = 0; i < 4; i++) {
+            const a = angle - MELEE_ARC/2 + (MELEE_ARC / 4) * i;
+            const r = MELEE_RANGE * 0.5;
+            particles.push({
+                x: bot.x + Math.cos(a) * r * 0.5,
+                y: bot.y + Math.sin(a) * r * 0.5,
+                vx: Math.cos(a) * 80, vy: Math.sin(a) * 80,
+                life: 0.15, maxLife: 0.15, size: 2, color: bot.botColor, type: 'melee',
+            });
+        }
+    }
+
+    function botCastSpell(bot, target) {
+        // Pick a random spell that bot can afford
+        const affordable = playerSpells.filter(s => bot.mana >= s.cost && !(s.currentCooldown > 0));
+        if (affordable.length === 0) return;
+        const spell = affordable[Math.floor(Math.random() * affordable.length)];
+
+        bot.mana -= spell.cost;
+        bot.castCooldown = 1.5 + Math.random() * 1.5;
+
+        const cast = ArconSystem.castSpell(spell,
+            { id: bot.id, x: bot.x, y: bot.y },
+            { id: 'target', x: target.x, y: target.y },
+            target.x, target.y, {
+                hp: bot.hp, maxHp: bot.maxHp, mana: bot.mana,
+                maxMana: getMaxMana(), speed: bot.speed, level: playerLevel,
+                combo: 0, kills: 0, floor: currentFloor,
+            }
+        );
+        allyCasts.push(cast);
+    }
+
+    function botDash(bot, awayFrom) {
+        let dx = bot.x - awayFrom.x, dy = bot.y - awayFrom.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        dx /= len; dy /= len;
+        const dashDist = DASH_SPEED * DASH_DURATION;
+        const nx = bot.x + dx * dashDist;
+        const ny = bot.y + dy * dashDist;
+        if (currentDungeon && Dungeon.isWalkableBox(currentDungeon, nx, ny, 5)) {
+            bot.x = nx; bot.y = ny;
+        }
+        bot.dashCooldown = getDashCooldown();
+        bot.invulnTimer = DASH_INVULN;
+    }
+
+    function getBotCount() { return bots.length; }
+
+    function updateBotHUD() {
+        let container = document.getElementById('bot-party-hud');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'bot-party-hud';
+            container.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:20;';
+            document.getElementById('campaign-hud').appendChild(container);
+        }
+        container.innerHTML = '';
+        for (const bot of bots) {
+            const div = document.createElement('div');
+            div.style.cssText = 'background:rgba(0,0,0,0.7);border:1px solid ' + bot.botColor + ';border-radius:4px;padding:2px 6px;font:9px monospace;color:#fff;text-align:center;min-width:50px;';
+            const hpPct = Math.max(0, bot.hp / bot.maxHp);
+            const hpColor = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#cccc44' : '#cc4444';
+            div.innerHTML = '<span style="color:' + bot.botColor + '">' + bot.botName + '</span>'
+                + '<div style="height:3px;background:#333;margin-top:2px;border-radius:1px;">'
+                + '<div style="height:100%;width:' + (hpPct*100) + '%;background:' + hpColor + ';border-radius:1px;"></div></div>';
+            container.appendChild(div);
+        }
+    }
+
     return {
         init, update, render, handleNetMessage,
         onKeyDown, onKeyUp, onMouseMove, onMouseDown, onMouseUp,
         isGameOver: () => gameOver,
         getFloor: () => currentFloor,
         hasSave, restoreFromSave, clearCheckpoint,
+        addBot, removeBot, getBotCount,
     };
 })();

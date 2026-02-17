@@ -103,6 +103,10 @@
         <div class="hud-center">
             <div id="camp-dash" class="dash-cd ready">DASH [SHIFT]</div>
             <div id="camp-enemies" class="enemy-count"></div>
+            <div id="bot-controls" style="display:flex;gap:4px;margin-top:4px;">
+                <button id="addBotBtn" onclick="Campaign.addBot()" style="font:8px monospace;background:#333;color:#cc66ff;border:1px solid #cc66ff;border-radius:3px;padding:2px 6px;cursor:pointer;">+ BOT</button>
+                <button id="removeBotBtn" onclick="Campaign.removeBot()" style="font:8px monospace;background:#333;color:#ff6666;border:1px solid #ff6666;border-radius:3px;padding:2px 6px;cursor:pointer;">- BOT</button>
+            </div>
         </div>
         <div class="hud-right" id="minimap-container">
             <canvas id="minimapCanvas" width="160" height="120"></canvas>
