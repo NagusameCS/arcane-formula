@@ -43,6 +43,11 @@ const Campaign = (() => {
     let floorIntroTimer = 0;
     let stuckTimer = 0; // Track if player is stuck
 
+    // Death / respawn
+    let playerDead = false;
+    let respawnTimer = 0;
+    const RESPAWN_TIME = 10;
+
     // Melee state
     let meleeTimer = 0;
     let meleeCooldown = 0;
@@ -192,6 +197,8 @@ const Campaign = (() => {
         playerCasts = [];
         allyCasts = [];
         gameOver = false;
+        playerDead = false;
+        respawnTimer = 0;
         floorCleared = false;
         bossDefeated = false;
         bossIntroPlayed = false;
@@ -241,6 +248,22 @@ const Campaign = (() => {
     function update(dt) {
         if (gameOver) return;
 
+        // Respawn timer (still tick even if showing UI)
+        if (playerDead && !gameOver) {
+            respawnTimer -= dt;
+            if (respawnTimer <= 0) {
+                playerDead = false;
+                player.hp = Math.floor(player.maxHp * 0.5);
+                player.mana = Math.floor(getMaxMana() * 0.3);
+                if (currentDungeon && currentDungeon.startX != null) {
+                    player.x = currentDungeon.startX * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2;
+                    player.y = currentDungeon.startY * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2;
+                }
+                player.invulnTimer = 2;
+                flashAlpha = 0.3;
+            }
+        }
+
         // Level up UI blocking
         if (showingLevelUp) return;
 
@@ -278,6 +301,11 @@ const Campaign = (() => {
         player.x = bounded.x;
         player.y = bounded.y;
 
+        // Skip player input when dead
+        if (playerDead) {
+            // Still update passive systems
+            if (player.hitFlash > 0) player.hitFlash -= dt;
+        } else {
         // ── MOVEMENT ──
         let mx = 0, my = 0;
         if (keys['w'] || keys['arrowup']) my -= 1;
@@ -364,6 +392,7 @@ const Campaign = (() => {
                     const dmg = getMeleeDmg();
                     const xp = Enemies.damageEnemy(e, dmg);
                     if (xp > 0) addXP(xp);
+                    if (Network.isConnected()) Network.send({ type: 'campaign-enemy-dmg', uid: e.uid, dmg });
                     // Knockback
                     const kbLen = Math.sqrt(dx * dx + dy * dy) || 1;
                     e.x += (dx / kbLen) * 20;
@@ -379,6 +408,8 @@ const Campaign = (() => {
             allyMelees[i].timer -= dt;
             if (allyMelees[i].timer <= 0) allyMelees.splice(i, 1);
         }
+
+        } // end playerDead else
 
         // Update bot AI
         updateBots(dt);
@@ -588,11 +619,21 @@ const Campaign = (() => {
 
         vignetteIntensity = Math.max(0, 1 - player.hp / player.maxHp) * 0.4;
 
-        // Death
-        if (player.hp <= 0 && !gameOver) {
-            gameOver = true;
-            if (typeof Audio !== 'undefined') { Audio.death(); Audio.stopMusic(); }
-            showCampaignEnd(false);
+        // Death / Respawn
+        if (player.hp <= 0 && !gameOver && !playerDead) {
+            playerDead = true;
+            respawnTimer = RESPAWN_TIME;
+            if (typeof Audio !== 'undefined') Audio.death();
+
+            // Check if ALL human players are dead (TPK)
+            const allAlliesDead = allies.filter(a => !a.isBot).every(a => a.hp <= 0);
+            const botsAllDead = bots.length === 0 || bots.every(b => b.hp <= 0);
+            if (allAlliesDead && botsAllDead) {
+                // Total party kill
+                gameOver = true;
+                if (typeof Audio !== 'undefined') Audio.stopMusic();
+                showCampaignEnd(false);
+            }
         }
 
         // Network sync
@@ -626,6 +667,7 @@ const Campaign = (() => {
                     a.alive = false;
                     const xp = Enemies.damageEnemy(e, Math.ceil(dmgMul));
                     if (xp > 0) addXP(xp);
+                    if (Network.isConnected()) Network.send({ type: 'campaign-enemy-dmg', uid: e.uid, dmg: Math.ceil(dmgMul) });
                     break;
                 }
             }
@@ -688,7 +730,7 @@ const Campaign = (() => {
 
     // ── MELEE ──
     function doMelee(worldX, worldY) {
-        if (gameOver || meleeTimer > 0 || meleeCooldown > 0) return;
+        if (gameOver || playerDead || meleeTimer > 0 || meleeCooldown > 0) return;
         if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) return;
 
         meleeAngle = Math.atan2(worldY - player.y, worldX - player.x);
@@ -719,7 +761,7 @@ const Campaign = (() => {
 
     // ── SPELLCASTING ──
     function castSpell(index) {
-        if (gameOver) return;
+        if (gameOver || playerDead) return;
         if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) return;
         if (index < 0 || index >= playerSpells.length) return;
         const spell = playerSpells[index];
@@ -728,14 +770,8 @@ const Campaign = (() => {
 
         player.mana -= spell.cost;
 
-        // Spam penalty: casting same spell repeatedly increases cooldown
-        if (index === lastSpellCast) {
-            spamCount = Math.min(spamCount + 1, 5);
-        } else {
-            spamCount = 0;
-        }
-        lastSpellCast = index;
-        spell.currentCooldown = spell.cooldown * (1 + spamCount * 0.3);
+        // No cooldowns — only mana-gated
+        spell.currentCooldown = 0;
 
         const world = Dungeon.screenToWorld(mouse.x, mouse.y);
 
@@ -766,7 +802,7 @@ const Campaign = (() => {
     }
 
     function doDash() {
-        if (player.dashing) return;
+        if (playerDead || player.dashing) return;
         if (typeof Cutscene !== 'undefined' && Cutscene.isActive()) return;
 
         const isChain = player.dashChainWindow > 0 && player.dashChainCount > 0;
@@ -912,6 +948,12 @@ const Campaign = (() => {
                     screenShake = { x: 3, y: 2 };
                     if (typeof Audio !== 'undefined') Audio.chest();
                 }
+                break;
+            }
+            case 'campaign-enemy-dmg': {
+                // Ally damaged an enemy — apply locally (don't re-broadcast)
+                const xp = Enemies.damageEnemyByUid(data.uid, data.dmg);
+                if (xp > 0) addXP(xp);
                 break;
             }
         }
@@ -1100,6 +1142,26 @@ const Campaign = (() => {
             showLevelUpUI();
         }
         renderLevelHUD(ctx, W, H);
+
+        // Respawn overlay
+        if (playerDead && !gameOver) {
+            ctx.save();
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, W, H);
+            ctx.globalAlpha = 1;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ff4444';
+            ctx.font = 'bold 24px "Courier New", monospace';
+            ctx.fillText('YOU DIED', W / 2, H / 2 - 30);
+            ctx.fillStyle = '#ffd700';
+            ctx.font = '16px "Courier New", monospace';
+            ctx.fillText('Respawning in ' + Math.ceil(respawnTimer) + 's...', W / 2, H / 2 + 10);
+            ctx.fillStyle = '#888';
+            ctx.font = '11px "Courier New", monospace';
+            ctx.fillText('Your allies are still fighting!', W / 2, H / 2 + 40);
+            ctx.restore();
+        }
 
         // Minimap
         const minimapCanvas = document.getElementById('minimapCanvas');
@@ -1825,6 +1887,7 @@ const Campaign = (() => {
                     xpGained += xp;
                     playerXP += xp;
                 }
+                if (Network.isConnected()) Network.send({ type: 'campaign-enemy-dmg', uid: e.uid, dmg: meleeDmg });
             }
         }
 

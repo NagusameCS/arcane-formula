@@ -353,26 +353,12 @@ const Spellbook = (() => {
                 name.className = 'library-card-name';
                 name.textContent = libSpell.name;
 
-                const cost = document.createElement('div');
-                cost.className = 'library-card-cost';
-                cost.textContent = `N=${libSpell.cost}`;
-
                 const desc = document.createElement('div');
                 desc.className = 'library-card-desc';
                 desc.textContent = libSpell.desc || '';
                 desc.style.color = 'var(--dim)'; // Ensure descriptions are never red
 
-                // Preview LaTeX for X formula
-                const preview = document.createElement('div');
-                preview.className = 'library-card-preview';
-                try {
-                    const latex = Blocks.toLatex(libSpell.x);
-                    katex.render(latex.substring(0, 80), preview, { throwOnError: false, displayMode: false });
-                } catch(e) { preview.textContent = '...'; }
-
                 card.appendChild(name);
-                card.appendChild(cost);
-                card.appendChild(preview);
                 card.appendChild(desc);
 
                 card.addEventListener('click', () => {
@@ -452,7 +438,7 @@ const Spellbook = (() => {
                     emitDelayFn: Parser.compile(emitExpr),
                     widthFn: Parser.compile(widthExpr),
                     xExpr, yExpr, emitExpr, widthExpr,
-                    cooldown: Math.max(0.5, spell.cost * 0.03),
+                    cooldown: 0,
                     currentCooldown: 0,
                 });
             } catch (e) {
@@ -467,7 +453,7 @@ const Spellbook = (() => {
                     yExpr: 'player.y + sin(aim) * 200 * t',
                     emitExpr: 'i * 0.02',
                     widthExpr: '4',
-                    cooldown: 1, currentCooldown: 0,
+                    cooldown: 0, currentCooldown: 0,
                 });
             }
         }

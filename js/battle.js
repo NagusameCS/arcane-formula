@@ -39,6 +39,10 @@ const Battle = (() => {
     let meleeAngle = 0;
     let meleeHit = false;
     let enemyMelees = []; // visual only
+    let arenaRoomType = 'ffa';
+    let arenaBosses = []; // spawned bosses for boss fight / gauntlet modes
+    let gauntletIndex = 0;
+    let gauntletBossOrder = [];
     const ENEMY_COLORS = ['#ff4444','#44ff88','#ff88ff','#ffaa22','#22ddff','#cccc44','#ff6688'];
 
     // Helper: get all enemy objects as array
@@ -67,8 +71,9 @@ const Battle = (() => {
         };
     }
 
-    function init(compiledSpells) {
+    function init(compiledSpells, roomType) {
         ArconSystem.setBoundsMode('arena');
+        arenaRoomType = roomType || 'ffa';
         player = {
             id: 'player', x: 200, y: 270,
             hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
@@ -90,6 +95,8 @@ const Battle = (() => {
         meleeCooldown = 0;
         meleeHit = false;
         enemyMelees = [];
+        arenaBosses = [];
+        gauntletIndex = 0;
 
         ArconSystem.reset();
 
@@ -108,6 +115,56 @@ const Battle = (() => {
             el.innerHTML = `<span class="key-num">${i + 1}</span><span>${playerSpells[i].name.substring(0, 4)}</span>`;
             keysDiv.appendChild(el);
         }
+
+        // Spawn bosses for custom room types
+        if (arenaRoomType === 'boss') {
+            spawnArenaBoss(randomBossKey());
+        } else if (arenaRoomType === 'gauntlet') {
+            gauntletBossOrder = shuffleArray(Object.keys(Enemies.BOSSES));
+            gauntletIndex = 0;
+            spawnArenaBoss(gauntletBossOrder[0]);
+        }
+    }
+
+    function randomBossKey() {
+        const keys = Object.keys(Enemies.BOSSES);
+        return keys[Math.floor(Math.random() * keys.length)];
+    }
+
+    function shuffleArray(arr) {
+        const a = [...arr];
+        for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+    }
+
+    function spawnArenaBoss(bossKey) {
+        const bossData = Enemies.BOSSES[bossKey];
+        if (!bossData) return;
+        const boss = {
+            name: bossKey,
+            isBoss: true,
+            x: 700, y: 270,
+            hp: bossData.hp, maxHp: bossData.hp,
+            speed: bossData.speed || 40,
+            size: bossData.size || 30,
+            color: bossData.color || '#ff4444',
+            dmg: bossData.dmg || 15,
+            behavior: 'boss',
+            xp: 0, alive: true,
+            hitFlash: 0, attackCd: 0,
+            aiTimer: 0, aiDirX: 0, aiDirY: 0,
+            phase: 1, phaseMax: bossData.phases || 2,
+            aggro: true,
+            aggroRange: 400, attackRange: 100,
+            spawnTimer: 1, tauntTimer: 0,
+            animTimer: 0, animFrame: 0,
+            facing: -1, animState: 'idle',
+            deathTimer: 0, prevX: 0, prevY: 0,
+        };
+        arenaBosses.push(boss);
     }
 
     function update(dt) {
@@ -214,6 +271,9 @@ const Battle = (() => {
         // ── Update arcons ──
         ArconSystem.updateArcons(dt, [player, ...getEnemies()]);
 
+        // ── Arena Boss Update ──
+        updateArenaBosses(dt);
+
         // ── Ambient particles ──
         if (Math.random() < 0.3) {
             arenaParticles.push({ x:Math.random()*960, y:550, vx:0, vy:-10-Math.random()*20, life:2+Math.random()*3, maxLife:5, size:1+Math.random(), color:'#ffd700' });
@@ -249,6 +309,151 @@ const Battle = (() => {
                 gameOver = true; winner = 'player'; showVictory();
                 Network.send({ type: 'gameover', winner: 'enemy' });
             }
+        }
+    }
+
+    function updateArenaBosses(dt) {
+        if (arenaBosses.length === 0) return;
+
+        const arcons = ArconSystem.getArcons();
+
+        for (let bi = arenaBosses.length - 1; bi >= 0; bi--) {
+            const boss = arenaBosses[bi];
+            if (!boss.alive) continue;
+
+            if (boss.spawnTimer > 0) { boss.spawnTimer -= dt; continue; }
+            if (boss.hitFlash > 0) boss.hitFlash -= dt;
+            boss.attackCd -= dt;
+
+            // Simple boss AI: chase player
+            const dx = player.x - boss.x, dy = player.y - boss.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            boss.facing = dx > 0 ? 1 : -1;
+
+            // Animation
+            boss.animTimer += dt;
+            if (boss.animTimer > 0.25) {
+                boss.animTimer = 0;
+                boss.animFrame = (boss.animFrame + 1) % 4;
+            }
+
+            if (dist > 60) {
+                // Move toward player
+                const spd = boss.speed * dt;
+                boss.x += (dx / dist) * spd;
+                boss.y += (dy / dist) * spd;
+                boss.animState = 'walk';
+            } else {
+                boss.animState = 'idle';
+            }
+
+            // Contact damage
+            if (dist < 30 && boss.attackCd <= 0 && player.invulnTimer <= 0) {
+                player.hp -= boss.dmg;
+                player.hitFlash = 0.2;
+                boss.attackCd = 1.5;
+                boss.animState = 'attack';
+                if (typeof Audio !== 'undefined') Audio.hit();
+            }
+
+            // Boss phase transition
+            const hpPct = boss.hp / boss.maxHp;
+            if (hpPct < 0.5 && boss.phase < boss.phaseMax) {
+                boss.phase++;
+                boss.speed *= 1.3;
+            }
+
+            // Clamp to arena
+            boss.x = Math.max(20, Math.min(940, boss.x));
+            boss.y = Math.max(20, Math.min(520, boss.y));
+
+            // Check arcon hits on boss
+            for (let i = arcons.length - 1; i >= 0; i--) {
+                const a = arcons[i];
+                if (!a.alive) continue;
+                const adx = a.x - boss.x, ady = a.y - boss.y;
+                const hitDist = a.width / 2 + boss.size / 2;
+                if (adx * adx + ady * ady < hitDist * hitDist) {
+                    a.alive = false;
+                    boss.hp -= 1;
+                    boss.hitFlash = 0.1;
+                    if (typeof Audio !== 'undefined') Audio.enemyHit();
+                    if (boss.hp <= 0) {
+                        boss.alive = false;
+                        // Death particles
+                        for (let j = 0; j < 15; j++) {
+                            arenaParticles.push({
+                                x: boss.x, y: boss.y,
+                                vx: (Math.random() - 0.5) * 120,
+                                vy: (Math.random() - 0.5) * 120,
+                                life: 0.6, maxLife: 0.6,
+                                size: 3 + Math.random() * 3,
+                                color: boss.color,
+                            });
+                        }
+                        // Gauntlet: spawn next boss
+                        if (arenaRoomType === 'gauntlet') {
+                            gauntletIndex++;
+                            if (gauntletIndex < gauntletBossOrder.length) {
+                                setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
+                            } else {
+                                // All bosses defeated
+                                gameOver = true;
+                                winner = 'player';
+                                showVictory();
+                            }
+                        } else {
+                            // Single boss defeated
+                            gameOver = true;
+                            winner = 'player';
+                            showVictory();
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Melee hit on boss
+            if (meleeTimer > 0 && !boss._meleeHitThisSwing) {
+                const mdx = boss.x - player.x, mdy = boss.y - player.y;
+                const mDist = Math.sqrt(mdx * mdx + mdy * mdy);
+                if (mDist < MELEE_RANGE) {
+                    const mAngle = Math.atan2(mdy, mdx);
+                    let diff = mAngle - meleeAngle;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    if (Math.abs(diff) < MELEE_ARC / 2) {
+                        boss._meleeHitThisSwing = true;
+                        boss.hp -= MELEE_DAMAGE;
+                        boss.hitFlash = 0.15;
+                        if (typeof Audio !== 'undefined') Audio.enemyHit();
+                        if (boss.hp <= 0) {
+                            boss.alive = false;
+                            for (let j = 0; j < 15; j++) {
+                                arenaParticles.push({
+                                    x: boss.x, y: boss.y,
+                                    vx: (Math.random() - 0.5) * 120,
+                                    vy: (Math.random() - 0.5) * 120,
+                                    life: 0.6, maxLife: 0.6,
+                                    size: 3 + Math.random() * 3,
+                                    color: boss.color,
+                                });
+                            }
+                            if (arenaRoomType === 'gauntlet') {
+                                gauntletIndex++;
+                                if (gauntletIndex < gauntletBossOrder.length) {
+                                    setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
+                                } else {
+                                    gameOver = true; winner = 'player'; showVictory();
+                                }
+                            } else {
+                                gameOver = true; winner = 'player'; showVictory();
+                            }
+                        }
+                    }
+                }
+            }
+            if (meleeTimer <= 0) boss._meleeHitThisSwing = false;
         }
     }
 
@@ -553,6 +758,62 @@ const Battle = (() => {
         renderMage(ctx, player, '#4488ff', '#88bbff');
         for (const e of getEnemies()) {
             renderMage(ctx, e, e.color || '#ff4444', e.colorLight || '#ff8877');
+        }
+
+        // Render arena bosses
+        for (const boss of arenaBosses) {
+            if (!boss.alive) continue;
+            const flash = boss.hitFlash > 0;
+            const s = boss.size;
+            // Shadow
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.ellipse(boss.x, boss.y + s / 2 + 2, s * 0.4, 3, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = boss.spawnTimer > 0 ? 0.3 : 1;
+            // Body
+            ctx.fillStyle = flash ? '#fff' : boss.color;
+            ctx.fillRect(boss.x - s * 0.4, boss.y - s * 0.5, s * 0.8, s);
+            // Head
+            ctx.fillStyle = flash ? '#fff' : (boss.color + 'cc');
+            ctx.fillRect(boss.x - s * 0.3, boss.y - s * 0.8, s * 0.6, s * 0.35);
+            // Eyes
+            ctx.fillStyle = '#ff0';
+            ctx.fillRect(boss.x - s * 0.15, boss.y - s * 0.65, 3, 3);
+            ctx.fillRect(boss.x + s * 0.05, boss.y - s * 0.65, 3, 3);
+            // Boss aura
+            ctx.globalAlpha = 0.08 + Math.sin(performance.now() / 200) * 0.04;
+            ctx.fillStyle = boss.color;
+            ctx.beginPath();
+            ctx.arc(boss.x, boss.y, s * 1.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            // Name
+            ctx.fillStyle = '#ffcc44';
+            ctx.font = 'bold 9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(boss.name.replace(/_/g, ' ').toUpperCase(), boss.x, boss.y - s * 0.85 - 4);
+            // HP bar
+            const barW = Math.max(s + 10, 40);
+            const hpPct = boss.hp / boss.maxHp;
+            ctx.fillStyle = '#111';
+            ctx.fillRect(boss.x - barW / 2 - 1, boss.y - s / 2 - 14, barW + 2, 6);
+            ctx.fillStyle = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#cccc44' : '#cc4444';
+            ctx.fillRect(boss.x - barW / 2, boss.y - s / 2 - 13, barW * hpPct, 4);
+        }
+
+        // Room type label
+        if (arenaRoomType !== 'ffa') {
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ffd700';
+            ctx.globalAlpha = 0.5;
+            ctx.font = 'bold 11px "Courier New", monospace';
+            const labels = { boss: 'BOSS FIGHT', gauntlet: 'BOSS GAUNTLET (' + (gauntletIndex + 1) + '/' + gauntletBossOrder.length + ')', duel: '1v1 DUEL' };
+            ctx.fillText(labels[arenaRoomType] || arenaRoomType.toUpperCase(), W / 2, 22);
+            ctx.globalAlpha = 1;
+            ctx.restore();
         }
 
         if (!gameOver) {

@@ -31,6 +31,9 @@
             case 'campaign':
                 Campaign.update(dt);
                 break;
+            case 'sandbox':
+                Sandbox.update(dt);
+                break;
         }
 
         ctx.clearRect(0, 0, W, H);
@@ -42,6 +45,7 @@
                 ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); break;
             case 'battle': Battle.render(ctx, W, H); break;
             case 'campaign': Campaign.render(ctx, W, H); break;
+            case 'sandbox': Sandbox.render(ctx); break;
         }
         requestAnimationFrame(gameLoop);
     }
@@ -91,6 +95,21 @@
         Spellbook.show();
     });
 
+    document.getElementById('modeSandbox').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
+        gameMode = 'sandbox';
+        document.getElementById('mode-select').classList.add('hidden');
+        state = 'spellbook';
+        Spellbook.init((spells) => {
+            compiledSpells = spells;
+            Spellbook.hide();
+            state = 'sandbox';
+            document.getElementById('sandbox-hud').classList.remove('hidden');
+            Sandbox.init(compiledSpells);
+        });
+        Spellbook.show();
+    });
+
     // ── LOBBY ──
     function showLobby() {
         document.getElementById('lobby').classList.remove('hidden');
@@ -103,6 +122,9 @@
         // Show solo button for campaign
         const soloBtn = document.getElementById('soloBtn');
         if (soloBtn) soloBtn.classList.toggle('hidden', gameMode !== 'campaign');
+        // Show room type selector for PvP
+        const pvpRoomType = document.getElementById('pvpRoomType');
+        if (pvpRoomType) pvpRoomType.classList.toggle('hidden', gameMode !== 'pvp');
     }
 
     const netCallbacks = {
@@ -224,7 +246,8 @@
 
         if (gameMode === 'pvp') {
             state = 'battle';
-            Battle.init(compiledSpells);
+            const roomType = document.getElementById('roomTypeSelect')?.value || 'ffa';
+            Battle.init(compiledSpells, roomType);
         } else {
             state = 'campaign';
             Campaign.init(compiledSpells, 0);
@@ -258,15 +281,18 @@
         if (state === 'intro') Intro.onMouseDown();
         else if (state === 'battle') { const c = getCanvasCoords(e); Battle.onMouseDown(c.x, c.y); }
         else if (state === 'campaign') { const c = getCanvasCoords(e); Campaign.onMouseDown(c.x, c.y); }
+        else if (state === 'sandbox') { const c = getCanvasCoords(e); Sandbox.onMouseDown(c.x, c.y); }
     });
     canvas.addEventListener('mouseup', () => {
         if (state === 'intro') Intro.onMouseUp();
         else if (state === 'battle') Battle.onMouseUp();
         else if (state === 'campaign') Campaign.onMouseUp();
+        else if (state === 'sandbox') Sandbox.onMouseUp();
     });
     document.addEventListener('mousemove', (e) => {
         if (state === 'battle') { const c = getCanvasCoords(e); Battle.onMouseMove(c.x, c.y); }
         else if (state === 'campaign') { const c = getCanvasCoords(e); Campaign.onMouseMove(c.x, c.y); }
+        else if (state === 'sandbox') { const c = getCanvasCoords(e); Sandbox.onMouseMove(c.x, c.y); }
     });
     document.addEventListener('keydown', (e) => {
         if (state === 'battle') {
@@ -275,12 +301,26 @@
         } else if (state === 'campaign') {
             Campaign.onKeyDown(e.key);
             if (e.key === ' ' || e.key === 'Shift') e.preventDefault();
+        } else if (state === 'sandbox') {
+            Sandbox.onKeyDown(e.key);
+            if (e.key === ' ' || e.key === 'Shift') e.preventDefault();
         }
     });
     document.addEventListener('keyup', (e) => {
         if (state === 'battle') Battle.onKeyUp(e.key);
         else if (state === 'campaign') Campaign.onKeyUp(e.key);
+        else if (state === 'sandbox') Sandbox.onKeyUp(e.key);
     });
     canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+    // Expose Game API for sandbox back-to-menu
+    window.Game = {
+        backToMenu() {
+            state = 'mode-select';
+            document.getElementById('sandbox-hud').classList.add('hidden');
+            document.getElementById('hud').classList.add('hidden');
+            document.getElementById('campaign-hud').classList.add('hidden');
+            showModeSelect();
+        }
+    };
 })();

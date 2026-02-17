@@ -52,8 +52,9 @@ const Enemies = (() => {
     let effects = [];
     let shakeIntensity = 0;
     let shakeTimer = 0;
+    let uidCounter = 0;
 
-    function reset() { enemies = []; effects = []; shakeIntensity = 0; shakeTimer = 0; }
+    function reset() { enemies = []; effects = []; shakeIntensity = 0; shakeTimer = 0; uidCounter = 0; }
 
     function spawnFromDungeon(dungeon) {
         enemies = [];
@@ -101,7 +102,9 @@ const Enemies = (() => {
     }
 
     function createEnemy(name, stats, tileX, tileY, isBoss) {
+        uidCounter++;
         return {
+            uid: uidCounter,
             name, isBoss,
             x: tileX * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2,
             y: tileY * Dungeon.TILE_SIZE + Dungeon.TILE_SIZE / 2,
@@ -956,6 +959,29 @@ const Enemies = (() => {
         return 0;
     }
 
+    function damageEnemyByUid(uid, dmg) {
+        const enemy = enemies.find(e => e.uid === uid && e.alive);
+        if (enemy) {
+            enemy.hp -= dmg;
+            enemy.hitFlash = 0.15;
+            enemy.aggro = true;
+            if (typeof Audio !== 'undefined') Audio.enemyHit();
+            if (enemy.hp <= 0) {
+                enemy.alive = false;
+                for (let i = 0; i < 12; i++) {
+                    effects.push({
+                        type: 'projectile',
+                        x: enemy.x, y: enemy.y,
+                        vx: (Math.random() - 0.5) * 100, vy: (Math.random() - 0.5) * 100,
+                        dmg: 0, life: 0.5, color: enemy.color, size: 3, owner: 'none',
+                    });
+                }
+                return enemy.xp;
+            }
+        }
+        return 0;
+    }
+
     // ─── Pixel Sprite Definitions ───
     // Each sprite is drawn with canvas fillRect at pixel scale (px=2)
     // Defines body shape, limbs, features per frame
@@ -1716,7 +1742,7 @@ const Enemies = (() => {
 
     return {
         TYPES, BOSSES, reset, spawnFromDungeon, update, render,
-        damageEnemy, getShake, addShake, seedRandom,
+        damageEnemy, damageEnemyByUid, getShake, addShake, seedRandom,
         getEnemies: () => enemies,
         getEffects: () => effects,
     };

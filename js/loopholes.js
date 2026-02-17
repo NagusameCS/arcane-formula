@@ -968,3 +968,40 @@ const Loopholes = (() => {
         unlockDev,
     };
 })();
+
+// ── AUTO-INTEGRATE LOOPHOLE SPELLS INTO SPELL LIBRARY ──
+(() => {
+    if (typeof Loopholes === 'undefined' || typeof SpellLibrary === 'undefined') return;
+
+    // Category remapping from dev categories to standard library categories
+    const CATEGORY_MAP = {
+        'Spacetime': 'Advanced',
+        'Quantum': 'Chaos',
+        'Forbidden': 'Offensive',
+        'Geometric': 'Utility',
+        'Chaotic': 'Chaos',
+        'Resourceful': 'Gambling',
+    };
+
+    for (const spell of Loopholes.DEV_SPELLS) {
+        // Strip loophole label from description (remove "⚡ LOOPHOLE #XX+#YY — " prefix)
+        let cleanDesc = spell.desc.replace(/^⚡\s*LOOPHOLE\s*#[\d+#\s]*—?\s*/i, '').trim();
+        if (!cleanDesc) cleanDesc = spell.desc;
+
+        const mapped = {
+            name: spell.name,
+            category: CATEGORY_MAP[spell.category] || 'Advanced',
+            cost: spell.cost,
+            desc: cleanDesc,
+            x: spell.x,
+            y: spell.y,
+            emit: spell.emit,
+            width: spell.width,
+        };
+
+        // Only add if not already present (by name)
+        if (!SpellLibrary.SPELLS.some(s => s.name === mapped.name)) {
+            SpellLibrary.SPELLS.push(mapped);
+        }
+    }
+})();
