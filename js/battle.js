@@ -467,6 +467,12 @@ const Battle = (() => {
                 player.x = c.x; player.y = c.y;
                 player.invulnTimer = 2;
             }
+            // Sync state even while dead so peers see death/respawn
+            syncTimer -= dt;
+            if (syncTimer <= 0 && Network.isConnected()) {
+                syncTimer = SYNC_RATE;
+                Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing, score: playerScore, alive: player.alive });
+            }
             updatePassive(dt);
             if (arenaMode === 'solo') updateBotAI(dt);
             return;
@@ -598,7 +604,7 @@ const Battle = (() => {
         syncTimer -= dt;
         if (syncTimer <= 0 && Network.isConnected()) {
             syncTimer = SYNC_RATE;
-            Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing, score: playerScore });
+            Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing, score: playerScore, alive: player.alive });
         }
 
         updateHUD();
@@ -961,6 +967,12 @@ const Battle = (() => {
                     enemy.x = c.x; enemy.y = c.y;
                     enemy.hp = data.hp; enemy.mana = data.mana; enemy.dashing = data.dashing;
                     enemy.score = data.score || 0; scores[pid] = data.score || 0;
+                    // ★ Sync alive state — handles respawn visibility
+                    if (data.alive !== undefined) {
+                        enemy.alive = data.alive;
+                    } else if (data.hp > 0) {
+                        enemy.alive = true; // backward compat: if hp > 0, they're alive
+                    }
                 }
                 break;
             case 'cast':
