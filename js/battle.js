@@ -40,6 +40,19 @@ const Battle = (() => {
 
     // Boss / Gauntlet
     let arenaBosses = [], gauntletIndex = 0, gauntletBossOrder = [];
+    let bossMinibosses = [], minibossesDefeated = 0, minibossesRequired = 0;
+    let bossGateActive = false, pendingBossKey = '';
+
+    // Boss dialogue
+    let dialogueQueue = [], dialogueActive = null, dialogueCharIndex = 0, dialogueTimer = 0;
+    const DIALOGUE_SPEED = 0.03; // seconds per character
+
+    // Screen effects
+    let screenShake = 0, screenShakeIntensity = 0;
+    let slowMoTimer = 0, slowMoScale = 1;
+    let deathEffects = []; // {x,y,color,timer,maxTimer,type}
+    let bossDeathAnim = null; // {boss, timer, maxTimer, particles}
+    let phaseTransition = null; // {boss, timer, maxTimer, stage}
 
     // Survival
     let survivalWave = 0, survivalEnemies = [], survivalSpawnTimer = 0;
@@ -51,6 +64,124 @@ const Battle = (() => {
     // Respawn
     const RESPAWN_TIME = 5;
     let playerDead = false, respawnTimer = 0;
+    let playerDeathAnim = null; // {timer, x, y, particles}
+    let playerRespawnAnim = null; // {timer, x, y}
+
+    // ════════════════════════════════════════
+    //  RICH BOSS DATA — stages, dialogue, minibosses, attacks
+    // ════════════════════════════════════════
+    const BOSS_DATA = {
+        'Pharaoh Khet': {
+            title: 'PHARAOH KHET',
+            subtitle: 'Lord of the Golden Sands',
+            color: '#ffd700', colorDark: '#b8860b', colorGlow: '#ffec80',
+            minibossCount: 2,
+            minibossType: { name: 'Anubis Sentinel', hp: 60, speed: 70, size: 16, color: '#c4a35a', dmg: 10 },
+            dialogue: {
+                intro: ['You dare enter my domain?', 'Your formulas will crumble before the sands of time!'],
+                phase2: ['Impressive... but I have barely begun.', 'Witness the wrath of a GOD-KING!'],
+                phase3: ['IMPOSSIBLE! You will NOT survive this!'],
+                death: ['The sands... reclaim me...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 1.8, behavior: 'chase', aura: null },
+                { speedMul: 1.4, dmgMul: 1.3, attackCd: 1.3, behavior: 'dash_chase', aura: '#ffd70044' },
+                { speedMul: 1.8, dmgMul: 1.6, attackCd: 0.8, behavior: 'berserk', aura: '#ff440066' },
+            ],
+        },
+        'Lord Thanatos': {
+            title: 'LORD THANATOS',
+            subtitle: 'Herald of the Underworld',
+            color: '#ff4500', colorDark: '#8b0000', colorGlow: '#ff6633',
+            minibossCount: 2,
+            minibossType: { name: 'Hellhound Alpha', hp: 70, speed: 80, size: 14, color: '#8b0000', dmg: 12 },
+            dialogue: {
+                intro: ['Another soul for my collection.', 'Death is not an ending... it is my BEGINNING.'],
+                phase2: ['You fight well, mortal. But pain is infinite.'],
+                phase3: ['KNEEL BEFORE OBLIVION!', 'Your ashes will fuel my resurrection!'],
+                death: ['This... changes... nothing...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 1.5, behavior: 'chase', aura: null },
+                { speedMul: 1.5, dmgMul: 1.4, attackCd: 1.0, behavior: 'teleport_chase', aura: '#ff450044' },
+                { speedMul: 2.0, dmgMul: 1.8, attackCd: 0.6, behavior: 'berserk', aura: '#ff000066' },
+            ],
+        },
+        'Elder Thornback': {
+            title: 'ELDER THORNBACK',
+            subtitle: 'Ancient of the Verdant Deep',
+            color: '#228b22', colorDark: '#006400', colorGlow: '#44ff44',
+            minibossCount: 3,
+            minibossType: { name: 'Thornguard', hp: 80, speed: 50, size: 18, color: '#006400', dmg: 14 },
+            dialogue: {
+                intro: ['The forest remembers all trespassers.', 'Your magic poisons the roots... you must be purged.'],
+                phase2: ['The canopy weeps... but my thorns grow SHARPER.'],
+                phase3: ['I AM THE FOREST! You cannot kill what has NO END!'],
+                death: ['Return... to the... earth...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 2.0, behavior: 'patrol', aura: null },
+                { speedMul: 1.3, dmgMul: 1.5, attackCd: 1.5, behavior: 'summon_chase', aura: '#228b2244' },
+                { speedMul: 1.6, dmgMul: 2.0, attackCd: 1.0, behavior: 'berserk', aura: '#00ff0066' },
+            ],
+        },
+        'Archon Solaris': {
+            title: 'ARCHON SOLARIS',
+            subtitle: 'Radiance Incarnate',
+            color: '#ffffff', colorDark: '#ccaa44', colorGlow: '#ffffcc',
+            minibossCount: 2,
+            minibossType: { name: 'Light Warden', hp: 55, speed: 90, size: 14, color: '#ffd700', dmg: 11 },
+            dialogue: {
+                intro: ['I shine so that others may see the truth.', 'You are but a shadow. Shadows BURN.'],
+                phase2: ['Your resolve is... unexpected. But light always prevails.'],
+                phase3: ['BLINDING RADIANCE! LOOK UPON YOUR END!'],
+                death: ['Even stars... must fade...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 1.6, behavior: 'strafe', aura: null },
+                { speedMul: 1.5, dmgMul: 1.3, attackCd: 1.1, behavior: 'dash_strafe', aura: '#ffffff33' },
+                { speedMul: 2.0, dmgMul: 1.7, attackCd: 0.7, behavior: 'berserk', aura: '#ffff8866' },
+            ],
+        },
+        'Core Override': {
+            title: 'CORE OVERRIDE',
+            subtitle: 'Rogue Intelligence',
+            color: '#00ffff', colorDark: '#006688', colorGlow: '#88ffff',
+            minibossCount: 2,
+            minibossType: { name: 'Firewall Node', hp: 50, speed: 100, size: 12, color: '#00bfff', dmg: 9 },
+            dialogue: {
+                intro: ['ANALYSIS: Organic threat detected.', 'INITIATING purge protocol OMEGA.'],
+                phase2: ['RECALCULATING. Threat level: ELEVATED.', 'DEPLOYING advanced countermeasures.'],
+                phase3: ['ERROR: CONTAINMENT FAILED. MAXIMUM FORCE AUTHORIZED.'],
+                death: ['SYSTEM... CRITICAL... shut...down...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 1.4, behavior: 'strafe', aura: null },
+                { speedMul: 1.6, dmgMul: 1.3, attackCd: 0.9, behavior: 'teleport_chase', aura: '#00ffff33' },
+                { speedMul: 2.2, dmgMul: 1.6, attackCd: 0.5, behavior: 'berserk', aura: '#00ffff66' },
+            ],
+        },
+        'Lich King Morthul': {
+            title: 'LICH KING MORTHUL',
+            subtitle: 'Sovereign of the Unliving',
+            color: '#9b59b6', colorDark: '#5a1080', colorGlow: '#cc88ff',
+            minibossCount: 3,
+            minibossType: { name: 'Death Knight', hp: 90, speed: 60, size: 18, color: '#44005a', dmg: 16 },
+            dialogue: {
+                intro: ['A thousand years I have waited.', 'Your magic is... quaint. Let me show you TRUE power.'],
+                phase2: ['You have earned my attention, mortal.', 'But attention from death is NEVER a gift.'],
+                phase3: ['RISE, MY LEGIONS! CONSUME THIS FOOL!'],
+                phase4: ['YOU WILL JOIN MY ARMY... IN PIECES!'],
+                death: ['I will return... I ALWAYS return...'],
+            },
+            stages: [
+                { speedMul: 1, dmgMul: 1, attackCd: 1.8, behavior: 'patrol', aura: null },
+                { speedMul: 1.3, dmgMul: 1.3, attackCd: 1.4, behavior: 'summon_chase', aura: '#9b59b633' },
+                { speedMul: 1.6, dmgMul: 1.6, attackCd: 1.0, behavior: 'teleport_chase', aura: '#9b59b655' },
+                { speedMul: 2.0, dmgMul: 2.0, attackCd: 0.6, behavior: 'berserk', aura: '#ff00ff66' },
+            ],
+        },
+    };
 
     // ── Solo mode bots ──
     let soloBots = [];                 // AI controlled enemies for solo mode
@@ -170,7 +301,14 @@ const Battle = (() => {
         enemyMelees = [];
         playerScore = 0; scores = {};
         playerDead = false; respawnTimer = 0;
+        playerDeathAnim = null; playerRespawnAnim = null;
         arenaBosses = []; gauntletIndex = 0;
+        bossMinibosses = []; minibossesDefeated = 0; minibossesRequired = 0;
+        bossGateActive = false; pendingBossKey = '';
+        dialogueQueue = []; dialogueActive = null; dialogueCharIndex = 0; dialogueTimer = 0;
+        screenShake = 0; screenShakeIntensity = 0;
+        slowMoTimer = 0; slowMoScale = 1;
+        deathEffects = []; bossDeathAnim = null; phaseTransition = null;
         survivalWave = 0; survivalEnemies = []; survivalSpawnTimer = 2; survivalScore = 0;
         targetDummies = []; targetTimer = 60; targetHits = 0;
         teamScores = [0, 0]; teamAssignments = {};
@@ -207,12 +345,32 @@ const Battle = (() => {
             spawnSoloBots(SOLO_BOT_COUNT);
         }
 
-        // Boss / Gauntlet (5x HP applied in spawnArenaBoss)
+        // Boss / Gauntlet — now with miniboss gate
         if (arenaMode === 'boss') {
-            spawnArenaBoss(randomBossKey());
+            const bk = randomBossKey();
+            pendingBossKey = bk;
+            const bd = BOSS_DATA[bk];
+            if (bd && bd.minibossCount > 0) {
+                bossGateActive = true;
+                minibossesRequired = bd.minibossCount;
+                minibossesDefeated = 0;
+                spawnMinibosses(bd);
+            } else {
+                spawnArenaBoss(bk);
+            }
         } else if (arenaMode === 'gauntlet') {
             gauntletBossOrder = shuffleArray(Object.keys(Enemies.BOSSES));
-            spawnArenaBoss(gauntletBossOrder[0]);
+            const bk = gauntletBossOrder[0];
+            pendingBossKey = bk;
+            const bd = BOSS_DATA[bk];
+            if (bd && bd.minibossCount > 0) {
+                bossGateActive = true;
+                minibossesRequired = bd.minibossCount;
+                minibossesDefeated = 0;
+                spawnMinibosses(bd);
+            } else {
+                spawnArenaBoss(bk);
+            }
         }
 
         // Survival
@@ -234,7 +392,7 @@ const Battle = (() => {
     }
 
     // ════════════════════════════════════════
-    //  BOSS HELPERS — 5x HP
+    //  BOSS HELPERS — enhanced with stages, minibosses, dialogue
     // ════════════════════════════════════════
     function randomBossKey() {
         const k = Object.keys(Enemies.BOSSES);
@@ -243,18 +401,153 @@ const Battle = (() => {
     function shuffleArray(a) {
         a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a;
     }
+
+    function spawnMinibosses(bossData) {
+        bossMinibosses = [];
+        const mt = bossData.minibossType;
+        const count = bossData.minibossCount;
+        for (let i = 0; i < count; i++) {
+            const angle = (Math.PI * 2 / count) * i + Math.PI / 4;
+            const cx = 480, cy = 270, dist = 180;
+            bossMinibosses.push({
+                name: mt.name, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist,
+                hp: mt.hp, maxHp: mt.hp, speed: mt.speed, size: mt.size,
+                color: mt.color, dmg: mt.dmg, alive: true, hitFlash: 0,
+                attackCd: 0, animTimer: 0, facing: 1,
+                _meleeHitThisSwing: false, spawnTimer: 0.5 + i * 0.3,
+                deathTimer: 0, animState: 'idle',
+            });
+        }
+        queueDialogue(bossData.title, [`Defeat ${count} ${mt.name}s to challenge the boss!`], bossData.color);
+    }
+
     function spawnArenaBoss(key) {
         const bd = Enemies.BOSSES[key]; if (!bd) return;
-        const bossHp = bd.hp * 5; // ★ 5x boss HP
-        arenaBosses.push({
+        const richData = BOSS_DATA[key];
+        const bossHp = bd.hp * 5;
+        const stageCount = richData ? richData.stages.length : (bd.phases || 2);
+        const boss = {
             name: key, isBoss: true, x: 700, y: 270,
-            hp: bossHp, maxHp: bossHp, speed: bd.speed || 40,
-            size: bd.size || 30, color: bd.color || '#ff4444',
-            dmg: bd.dmg || 15, alive: true, hitFlash: 0, attackCd: 0,
-            phase: 1, phaseMax: bd.phases || 2,
-            spawnTimer: 1, animTimer: 0, animFrame: 0, facing: -1,
+            hp: bossHp, maxHp: bossHp, speed: bd.speed || 40, baseSpeed: bd.speed || 40,
+            size: bd.size || 30, color: richData ? richData.color : (bd.color || '#ff4444'),
+            colorDark: richData ? richData.colorDark : '#880000',
+            colorGlow: richData ? richData.colorGlow : '#ff8888',
+            dmg: bd.dmg || 15, baseDmg: bd.dmg || 15,
+            alive: true, hitFlash: 0, attackCd: 0,
+            stage: 1, stageMax: stageCount,
+            spawnTimer: 1.5, animTimer: 0, animFrame: 0, facing: -1,
             _meleeHitThisSwing: false,
-        });
+            // Animation state
+            animState: 'idle', // idle, walk, attack, hurt, stageUp, death
+            attackAnimTimer: 0, hurtAnimTimer: 0,
+            // Teleport (for teleport_chase behavior)
+            teleportCd: 0, teleportFlash: 0,
+            // Stage data
+            currentBehavior: richData ? richData.stages[0].behavior : 'chase',
+            aura: null,
+            // Dash attack
+            dashAttackTimer: 0, dashDirX: 0, dashDirY: 0, isDashing: false,
+        };
+        arenaBosses.push(boss);
+
+        // Intro dialogue
+        if (richData && richData.dialogue.intro) {
+            queueDialogue(richData.title, richData.dialogue.intro, richData.color);
+            if (typeof Audio !== 'undefined') Audio.bossRoar();
+        }
+        // Trigger screen shake on spawn
+        triggerScreenShake(8, 1.0);
+    }
+
+    function triggerScreenShake(intensity, duration) {
+        screenShakeIntensity = intensity;
+        screenShake = duration;
+    }
+
+    function triggerSlowMo(duration, scale) {
+        slowMoTimer = duration;
+        slowMoScale = scale;
+    }
+
+    function queueDialogue(speaker, lines, color) {
+        for (const line of lines) {
+            dialogueQueue.push({ speaker, text: line, color: color || '#ffd700' });
+        }
+        if (!dialogueActive) advanceDialogue();
+    }
+
+    function advanceDialogue() {
+        if (dialogueQueue.length === 0) { dialogueActive = null; return; }
+        dialogueActive = dialogueQueue.shift();
+        dialogueCharIndex = 0;
+        dialogueTimer = 0;
+    }
+
+    function updateDialogue(dt) {
+        if (!dialogueActive) return;
+        dialogueTimer += dt;
+        if (dialogueCharIndex < dialogueActive.text.length) {
+            while (dialogueTimer >= DIALOGUE_SPEED && dialogueCharIndex < dialogueActive.text.length) {
+                dialogueTimer -= DIALOGUE_SPEED;
+                dialogueCharIndex++;
+                if (dialogueCharIndex % 3 === 0 && typeof Audio !== 'undefined') Audio.dialogueBlip();
+            }
+        } else {
+            dialogueTimer += dt;
+            if (dialogueTimer > 2.5) advanceDialogue();
+        }
+    }
+
+    function triggerBossPhaseTransition(boss, newStage) {
+        const richData = BOSS_DATA[boss.name];
+        if (!richData) return;
+        boss.stage = newStage;
+        const stageData = richData.stages[newStage - 1];
+        if (stageData) {
+            boss.speed = boss.baseSpeed * stageData.speedMul;
+            boss.dmg = boss.baseDmg * stageData.dmgMul;
+            boss.attackCd = 0;
+            boss.currentBehavior = stageData.behavior;
+            boss.aura = stageData.aura;
+        }
+        // Dialogue
+        const dKey = 'phase' + newStage;
+        if (richData.dialogue[dKey]) {
+            queueDialogue(richData.title, richData.dialogue[dKey], richData.color);
+        }
+        // Effects
+        triggerScreenShake(12, 1.5);
+        triggerSlowMo(0.8, 0.3);
+        if (typeof Audio !== 'undefined') Audio.bossRoar();
+        // Phase transition animation
+        phaseTransition = { boss, timer: 1.5, maxTimer: 1.5, stage: newStage };
+        // Burst particles
+        for (let i = 0; i < 30; i++) {
+            const a = (Math.PI * 2 / 30) * i;
+            arenaParticles.push({
+                x: boss.x, y: boss.y,
+                vx: Math.cos(a) * (80 + Math.random() * 60),
+                vy: Math.sin(a) * (80 + Math.random() * 60),
+                life: 1.0, maxLife: 1.0,
+                size: 3 + Math.random() * 4,
+                color: richData.color,
+            });
+        }
+    }
+
+    function spawnDeathEffect(x, y, color, type) {
+        const de = { x, y, color, timer: type === 'boss' ? 3.0 : 1.5, maxTimer: type === 'boss' ? 3.0 : 1.5, type, particles: [] };
+        const count = type === 'boss' ? 50 : 20;
+        for (let i = 0; i < count; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const spd = 20 + Math.random() * (type === 'boss' ? 150 : 80);
+            de.particles.push({
+                x, y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
+                size: type === 'boss' ? 2 + Math.random() * 5 : 1 + Math.random() * 3,
+                life: 1, color,
+            });
+        }
+        deathEffects.push(de);
     }
 
     // ════════════════════════════════════════
@@ -431,7 +724,7 @@ const Battle = (() => {
                 if (Math.abs(diff) < MELEE_ARC / 2) {
                     player.hp -= MELEE_DAMAGE; player.hitFlash = 0.3;
                     if (typeof Audio !== 'undefined') Audio.playerHurt();
-                    if (player.hp <= 0 && player.alive) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                    if (player.hp <= 0 && player.alive) { triggerPlayerDeath(); }
                 }
             }
         }
@@ -456,6 +749,9 @@ const Battle = (() => {
     // ════════════════════════════════════════
     function update(dt) {
         if (gameOver) return;
+        // Apply slow-motion effect
+        const realDt = dt;
+        if (slowMoTimer > 0) { slowMoTimer -= realDt; dt *= slowMoScale; }
 
         // ── Respawn ──
         if (playerDead) {
@@ -466,6 +762,18 @@ const Battle = (() => {
                 const c = clampArena(100 + Math.random() * 300, 100 + Math.random() * 340);
                 player.x = c.x; player.y = c.y;
                 player.invulnTimer = 2;
+                // Respawn shimmer animation
+                playerRespawnAnim = { timer: 1.0, x: player.x, y: player.y };
+            }
+            // Update death animation particles
+            if (playerDeathAnim) {
+                playerDeathAnim.timer -= dt;
+                for (const p of playerDeathAnim.particles) {
+                    p.x += p.vx * dt; p.y += p.vy * dt;
+                    p.vy += 30 * dt; // gravity
+                    p.life -= dt * 0.8;
+                }
+                if (playerDeathAnim.timer <= 0) playerDeathAnim = null;
             }
             // Sync state even while dead so peers see death/respawn
             syncTimer -= dt;
@@ -533,7 +841,7 @@ const Battle = (() => {
                                 meleeHit = true;
                                 e.hp -= MELEE_DAMAGE; e.hitFlash = 0.3;
                                 if (typeof Audio !== 'undefined') Audio.hit();
-                                if (e.hp <= 0) { e.alive = false; onKill(e.id); }
+                                if (e.hp <= 0) { e.alive = false; onKill(e.id); spawnDeathEffect(e.x, e.y, e.color, 'enemy'); }
                                 if (Network.isConnected()) Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
                                 break;
                             }
@@ -568,7 +876,7 @@ const Battle = (() => {
         for (const e of getEnemies()) {
             if (!e.alive) continue;
             if (arenaMode === 'teams' && e.team === playerTeam) continue;
-            if (e.hp <= 0 && e.alive) { e.alive = false; onKill(e.id); }
+            if (e.hp <= 0 && e.alive) { e.alive = false; onKill(e.id); spawnDeathEffect(e.x, e.y, e.color, 'enemy'); }
         }
 
         // ── Solo bot AI ──
@@ -600,6 +908,26 @@ const Battle = (() => {
 
         updatePassive(dt);
 
+        // ── Screen effects ──
+        if (screenShake > 0) screenShake -= dt;
+        updateDialogue(dt);
+        // Update death effects
+        for (let i = deathEffects.length - 1; i >= 0; i--) {
+            const de = deathEffects[i];
+            de.timer -= dt;
+            for (const p of de.particles) {
+                p.x += p.vx * dt; p.y += p.vy * dt;
+                p.vy += 20 * dt;
+                p.life -= dt * 0.5;
+            }
+            if (de.timer <= 0) deathEffects.splice(i, 1);
+        }
+        // Update respawn animation
+        if (playerRespawnAnim) {
+            playerRespawnAnim.timer -= dt;
+            if (playerRespawnAnim.timer <= 0) playerRespawnAnim = null;
+        }
+
         // ── Network sync ──
         syncTimer -= dt;
         if (syncTimer <= 0 && Network.isConnected()) {
@@ -623,55 +951,212 @@ const Battle = (() => {
     }
 
     // ════════════════════════════════════════
-    //  ARENA BOSSES
+    //  ARENA BOSSES — multi-stage, dialogue, miniboss gate
     // ════════════════════════════════════════
     function updateArenaBosses(dt) {
         const arcons = ArconSystem.getArcons();
         const allPlayers = [player, ...getEnemies().filter(e => e.alive)];
 
+        // ── Update minibosses (gate phase) ──
+        if (bossGateActive) {
+            updateMinibosses(dt, arcons, allPlayers);
+            return;
+        }
+
+        // ── Phase transition animation ──
+        if (phaseTransition) {
+            phaseTransition.timer -= dt;
+            if (phaseTransition.timer <= 0) phaseTransition = null;
+            else return; // freeze boss during transition
+        }
+
+        // ── Boss death animation ──
+        if (bossDeathAnim) {
+            bossDeathAnim.timer -= dt;
+            // Spawn dissolution particles
+            if (bossDeathAnim.timer > 0) {
+                for (let i = 0; i < 3; i++) {
+                    const b = bossDeathAnim.boss;
+                    arenaParticles.push({
+                        x: b.x + (Math.random() - 0.5) * b.size,
+                        y: b.y + (Math.random() - 0.5) * b.size,
+                        vx: (Math.random() - 0.5) * 60,
+                        vy: -30 - Math.random() * 40,
+                        life: 0.8, maxLife: 0.8,
+                        size: 2 + Math.random() * 4,
+                        color: bossDeathAnim.boss.color,
+                    });
+                }
+            }
+            if (bossDeathAnim.timer <= 0) {
+                const boss = bossDeathAnim.boss;
+                bossDeathAnim = null;
+                if (arenaMode === 'gauntlet') {
+                    gauntletIndex++;
+                    if (gauntletIndex < gauntletBossOrder.length) {
+                        setTimeout(() => {
+                            const bk = gauntletBossOrder[gauntletIndex];
+                            pendingBossKey = bk;
+                            const bd = BOSS_DATA[bk];
+                            if (bd && bd.minibossCount > 0) {
+                                bossGateActive = true;
+                                minibossesRequired = bd.minibossCount;
+                                minibossesDefeated = 0;
+                                spawnMinibosses(bd);
+                            } else {
+                                spawnArenaBoss(bk);
+                            }
+                        }, 2000);
+                    } else { gameOver = true; winner = 'player'; showVictory(); }
+                } else { gameOver = true; winner = 'player'; showVictory(); }
+            }
+            return;
+        }
+
         for (let bi = arenaBosses.length - 1; bi >= 0; bi--) {
             const boss = arenaBosses[bi]; if (!boss.alive) continue;
             if (boss.spawnTimer > 0) { boss.spawnTimer -= dt; continue; }
             if (boss.hitFlash > 0) boss.hitFlash -= dt;
+            if (boss.attackAnimTimer > 0) boss.attackAnimTimer -= dt;
+            if (boss.hurtAnimTimer > 0) boss.hurtAnimTimer -= dt;
+            if (boss.teleportCd > 0) boss.teleportCd -= dt;
+            if (boss.teleportFlash > 0) boss.teleportFlash -= dt;
+            boss.animTimer += dt;
             boss.attackCd -= dt;
+
+            // Update anim state
+            if (boss.hurtAnimTimer > 0) boss.animState = 'hurt';
+            else if (boss.attackAnimTimer > 0) boss.animState = 'attack';
+            else boss.animState = 'idle';
 
             let closest = null, closeDist = Infinity;
             for (const p of allPlayers) {
                 const d = Math.sqrt((p.x - boss.x)**2 + (p.y - boss.y)**2);
                 if (d < closeDist) { closeDist = d; closest = p; }
             }
+
+            // ── Stage-based behavior ──
+            const behavior = boss.currentBehavior || 'chase';
+
             if (closest) {
                 const dx = closest.x - boss.x, dy = closest.y - boss.y;
                 const dist = Math.sqrt(dx*dx + dy*dy) || 1;
                 boss.facing = dx > 0 ? 1 : -1;
-                if (dist > 60) { boss.x += (dx/dist) * boss.speed * dt; boss.y += (dy/dist) * boss.speed * dt; }
 
-                if (dist < 30 && boss.attackCd <= 0) {
+                // Movement based on behavior
+                if (boss.isDashing) {
+                    boss.x += boss.dashDirX * boss.speed * 3 * dt;
+                    boss.y += boss.dashDirY * boss.speed * 3 * dt;
+                    boss.dashAttackTimer -= dt;
+                    if (boss.dashAttackTimer <= 0) boss.isDashing = false;
+                } else if (behavior === 'chase' || behavior === 'berserk') {
+                    if (dist > (behavior === 'berserk' ? 20 : 60)) {
+                        boss.x += (dx/dist) * boss.speed * dt;
+                        boss.y += (dy/dist) * boss.speed * dt;
+                    }
+                } else if (behavior === 'strafe' || behavior === 'dash_strafe') {
+                    const perpAngle = Math.atan2(dy, dx) + Math.PI / 2 * Math.sign(Math.sin(boss.animTimer));
+                    if (dist > 80) {
+                        boss.x += (dx/dist) * boss.speed * 0.7 * dt;
+                        boss.y += (dy/dist) * boss.speed * 0.7 * dt;
+                    }
+                    boss.x += Math.cos(perpAngle) * boss.speed * 0.5 * dt;
+                    boss.y += Math.sin(perpAngle) * boss.speed * 0.5 * dt;
+                } else if (behavior === 'patrol') {
+                    if (dist > 100) {
+                        boss.x += (dx/dist) * boss.speed * 0.5 * dt;
+                        boss.y += (dy/dist) * boss.speed * 0.5 * dt;
+                    } else {
+                        const wander = boss.animTimer * 0.5;
+                        boss.x += Math.cos(wander) * boss.speed * 0.3 * dt;
+                        boss.y += Math.sin(wander) * boss.speed * 0.3 * dt;
+                    }
+                } else if (behavior === 'dash_chase') {
+                    if (dist > 60) {
+                        boss.x += (dx/dist) * boss.speed * dt;
+                        boss.y += (dy/dist) * boss.speed * dt;
+                    }
+                    if (dist < 200 && dist > 60 && boss.attackCd <= 0 && Math.random() < 0.01) {
+                        boss.isDashing = true;
+                        boss.dashDirX = dx / dist;
+                        boss.dashDirY = dy / dist;
+                        boss.dashAttackTimer = 0.3;
+                    }
+                } else if (behavior === 'teleport_chase' || behavior === 'summon_chase') {
+                    if (dist > 60) {
+                        boss.x += (dx/dist) * boss.speed * dt;
+                        boss.y += (dy/dist) * boss.speed * dt;
+                    }
+                    // Teleport ability
+                    if (behavior === 'teleport_chase' && boss.teleportCd <= 0 && dist > 120) {
+                        const teleAngle = Math.atan2(dy, dx);
+                        boss.x = closest.x - Math.cos(teleAngle) * 50;
+                        boss.y = closest.y - Math.sin(teleAngle) * 50;
+                        boss.teleportCd = 4;
+                        boss.teleportFlash = 0.3;
+                        triggerScreenShake(4, 0.2);
+                        for (let i = 0; i < 12; i++) {
+                            arenaParticles.push({
+                                x: boss.x + (Math.random()-0.5)*30, y: boss.y + (Math.random()-0.5)*30,
+                                vx: (Math.random()-0.5)*100, vy: (Math.random()-0.5)*100,
+                                life: 0.4, maxLife: 0.4, size: 3, color: boss.color,
+                            });
+                        }
+                    }
+                }
+
+                // Attack
+                const richData = BOSS_DATA[boss.name];
+                const stageData = richData ? richData.stages[boss.stage - 1] : null;
+                const atkCd = stageData ? stageData.attackCd : 1.5;
+
+                if (dist < 40 && boss.attackCd <= 0) {
+                    boss.attackAnimTimer = 0.4;
                     if (closest === player && player.invulnTimer <= 0 && !player.dashing) {
-                        player.hp -= boss.dmg; player.hitFlash = 0.2; boss.attackCd = 1.5;
+                        player.hp -= boss.dmg; player.hitFlash = 0.2; boss.attackCd = atkCd;
+                        triggerScreenShake(3, 0.15);
                         if (typeof Audio !== 'undefined') Audio.hit();
-                        if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                        if (player.hp <= 0) {
+                            triggerPlayerDeath();
+                        }
                     } else if (closest !== player) {
                         Network.send({ type: 'boss-hit', dmg: boss.dmg }, closest.id);
                     }
                 }
             }
-            // ★ Clamp boss to arena
+            // Clamp boss to arena
             const bc = clampArena(boss.x, boss.y);
             boss.x = bc.x; boss.y = bc.y;
 
-            if (boss.hp / boss.maxHp < 0.5 && boss.phase < boss.phaseMax) { boss.phase++; boss.speed *= 1.3; }
+            // ── Stage transitions ──
+            const richData = BOSS_DATA[boss.name];
+            const stageThresholds = [];
+            if (richData) {
+                for (let s = 1; s < richData.stages.length; s++) {
+                    stageThresholds.push({ stage: s + 1, threshold: 1 - (s / richData.stages.length) });
+                }
+            }
+            const hpPct = boss.hp / boss.maxHp;
+            for (const st of stageThresholds) {
+                if (hpPct <= st.threshold && boss.stage < st.stage) {
+                    triggerBossPhaseTransition(boss, st.stage);
+                    break;
+                }
+            }
 
+            // ── Arcon collision ──
             for (let i = arcons.length - 1; i >= 0; i--) {
                 const a = arcons[i]; if (!a.alive) continue;
                 const adx = a.x - boss.x, ady = a.y - boss.y;
                 if (adx*adx + ady*ady < ((a.width/2 + boss.size/2) ** 2)) {
                     a.alive = false; boss.hp -= 1; boss.hitFlash = 0.1;
+                    boss.hurtAnimTimer = 0.15;
                     if (typeof Audio !== 'undefined') Audio.enemyHit();
                     if (boss.hp <= 0) { killBoss(boss, bi); break; }
                 }
             }
 
+            // ── Melee hit ──
             if (meleeTimer > 0 && !boss._meleeHitThisSwing) {
                 const mdx = boss.x - player.x, mdy = boss.y - player.y;
                 const d = Math.sqrt(mdx*mdx + mdy*mdy);
@@ -680,6 +1165,7 @@ const Battle = (() => {
                     let diff = a - meleeAngle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
                     if (Math.abs(diff) < MELEE_ARC/2) {
                         boss._meleeHitThisSwing = true; boss.hp -= MELEE_DAMAGE; boss.hitFlash = 0.15;
+                        boss.hurtAnimTimer = 0.15;
                         if (typeof Audio !== 'undefined') Audio.enemyHit();
                         if (boss.hp <= 0) killBoss(boss, bi);
                     }
@@ -689,15 +1175,141 @@ const Battle = (() => {
         }
     }
 
+    function updateMinibosses(dt, arcons, allPlayers) {
+        for (let i = bossMinibosses.length - 1; i >= 0; i--) {
+            const mb = bossMinibosses[i];
+            if (!mb.alive) {
+                mb.deathTimer -= dt;
+                continue;
+            }
+            if (mb.spawnTimer > 0) { mb.spawnTimer -= dt; continue; }
+            if (mb.hitFlash > 0) mb.hitFlash -= dt;
+            mb.attackCd -= dt;
+            mb.animTimer += dt;
+
+            let closest = null, closeDist = Infinity;
+            for (const p of allPlayers) {
+                const d = Math.sqrt((p.x - mb.x)**2 + (p.y - mb.y)**2);
+                if (d < closeDist) { closeDist = d; closest = p; }
+            }
+
+            if (closest) {
+                const dx = closest.x - mb.x, dy = closest.y - mb.y;
+                const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                mb.facing = dx > 0 ? 1 : -1;
+                if (dist > 40) {
+                    mb.x += (dx/dist) * mb.speed * dt;
+                    mb.y += (dy/dist) * mb.speed * dt;
+                }
+                if (dist < 25 && mb.attackCd <= 0) {
+                    if (closest === player && player.invulnTimer <= 0 && !player.dashing) {
+                        player.hp -= mb.dmg; player.hitFlash = 0.2; mb.attackCd = 1.2;
+                        if (typeof Audio !== 'undefined') Audio.hit();
+                        if (player.hp <= 0) triggerPlayerDeath();
+                    } else if (closest !== player) {
+                        Network.send({ type: 'boss-hit', dmg: mb.dmg }, closest.id);
+                    }
+                }
+            }
+            const mc = clampArena(mb.x, mb.y);
+            mb.x = mc.x; mb.y = mc.y;
+
+            // Arcon collision
+            for (let j = arcons.length - 1; j >= 0; j--) {
+                const a = arcons[j]; if (!a.alive) continue;
+                const adx = a.x - mb.x, ady = a.y - mb.y;
+                if (adx*adx + ady*ady < ((a.width/2 + mb.size/2) ** 2)) {
+                    a.alive = false; mb.hp -= 1; mb.hitFlash = 0.1;
+                    if (typeof Audio !== 'undefined') Audio.enemyHit();
+                    if (mb.hp <= 0) { killMiniboss(mb, i); break; }
+                }
+            }
+
+            // Melee hit
+            if (meleeTimer > 0 && !mb._meleeHitThisSwing) {
+                const mdx = mb.x - player.x, mdy = mb.y - player.y;
+                const d = Math.sqrt(mdx*mdx + mdy*mdy);
+                if (d < MELEE_RANGE) {
+                    const a = Math.atan2(mdy, mdx);
+                    let diff = a - meleeAngle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+                    if (Math.abs(diff) < MELEE_ARC/2) {
+                        mb._meleeHitThisSwing = true; mb.hp -= MELEE_DAMAGE; mb.hitFlash = 0.15;
+                        if (typeof Audio !== 'undefined') Audio.enemyHit();
+                        if (mb.hp <= 0) killMiniboss(mb, i);
+                    }
+                }
+            }
+            if (meleeTimer <= 0) mb._meleeHitThisSwing = false;
+        }
+    }
+
+    function killMiniboss(mb, idx) {
+        mb.alive = false;
+        mb.deathTimer = 1.0;
+        minibossesDefeated++;
+        spawnDeathEffect(mb.x, mb.y, mb.color, 'miniboss');
+        triggerScreenShake(6, 0.5);
+        triggerSlowMo(0.3, 0.4);
+        if (typeof Audio !== 'undefined') Audio.enemyDeath();
+
+        if (minibossesDefeated >= minibossesRequired) {
+            bossGateActive = false;
+            const richData = BOSS_DATA[pendingBossKey];
+            if (richData) {
+                queueDialogue(richData.title, ['The path is clear... the true battle begins!'], '#ffd700');
+            }
+            setTimeout(() => spawnArenaBoss(pendingBossKey), 2000);
+        } else {
+            const remaining = minibossesRequired - minibossesDefeated;
+            queueDialogue('MINIBOSS', [`${remaining} guardian${remaining > 1 ? 's' : ''} remaining...`], mb.color);
+        }
+    }
+
     function killBoss(boss, bi) {
         boss.alive = false;
-        for (let j = 0; j < 15; j++) arenaParticles.push({ x:boss.x, y:boss.y, vx:(Math.random()-.5)*120, vy:(Math.random()-.5)*120, life:.6, maxLife:.6, size:3+Math.random()*3, color:boss.color });
-        if (arenaMode === 'gauntlet') {
-            gauntletIndex++;
-            if (gauntletIndex < gauntletBossOrder.length) {
-                setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
-            } else { gameOver = true; winner = 'player'; showVictory(); }
-        } else { gameOver = true; winner = 'player'; showVictory(); }
+        const richData = BOSS_DATA[boss.name];
+        // Death dialogue
+        if (richData && richData.dialogue.death) {
+            queueDialogue(richData.title, richData.dialogue.death, richData.color);
+        }
+        // Death animation
+        bossDeathAnim = { boss, timer: 3.0, maxTimer: 3.0 };
+        spawnDeathEffect(boss.x, boss.y, boss.color, 'boss');
+        triggerScreenShake(15, 2.0);
+        triggerSlowMo(1.5, 0.2);
+        if (typeof Audio !== 'undefined') Audio.enemyDeath();
+        // Huge particle explosion
+        for (let j = 0; j < 40; j++) {
+            arenaParticles.push({
+                x: boss.x, y: boss.y,
+                vx: (Math.random()-.5)*200, vy: (Math.random()-.5)*200,
+                life: 1.0 + Math.random(), maxLife: 2.0,
+                size: 3 + Math.random() * 5, color: boss.color,
+            });
+        }
+    }
+
+    function triggerPlayerDeath() {
+        playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME;
+        // Death animation
+        playerDeathAnim = {
+            timer: 1.2, maxTimer: 1.2, x: player.x, y: player.y,
+            particles: [],
+        };
+        // Spawn dissolve particles
+        for (let i = 0; i < 25; i++) {
+            const a = Math.random() * Math.PI * 2;
+            playerDeathAnim.particles.push({
+                x: player.x, y: player.y,
+                vx: Math.cos(a) * (30 + Math.random() * 60),
+                vy: Math.sin(a) * (30 + Math.random() * 60) - 20,
+                size: 2 + Math.random() * 3,
+                life: 1, color: '#4488ff',
+            });
+        }
+        triggerScreenShake(10, 0.8);
+        triggerSlowMo(0.5, 0.3);
+        if (typeof Audio !== 'undefined') Audio.death();
     }
 
     // ════════════════════════════════════════
@@ -729,7 +1341,7 @@ const Battle = (() => {
                 if (tgt === player && player.invulnTimer <= 0 && !player.dashing) {
                     player.hp -= mob.dmg; player.hitFlash = 0.2; mob.attackCd = 1;
                     if (typeof Audio !== 'undefined') Audio.hit();
-                    if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                    if (player.hp <= 0) { triggerPlayerDeath(); }
                 }
             }
 
@@ -1004,7 +1616,7 @@ const Battle = (() => {
                         if (Math.abs(diff) < MELEE_ARC/2) {
                             player.hp -= MELEE_DAMAGE; player.hitFlash = 0.3;
                             if (typeof Audio !== 'undefined') Audio.playerHurt();
-                            if (player.hp <= 0 && player.alive) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                            if (player.hp <= 0 && player.alive) { triggerPlayerDeath(); }
                         }
                     }
                 }
@@ -1015,7 +1627,7 @@ const Battle = (() => {
             case 'boss-hit':
                 if (player.invulnTimer <= 0 && !player.dashing) {
                     player.hp -= data.dmg; player.hitFlash = 0.2;
-                    if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                    if (player.hp <= 0) { triggerPlayerDeath(); }
                 }
                 break;
             case 'peer-join':
@@ -1093,6 +1705,13 @@ const Battle = (() => {
     //  RENDER
     // ════════════════════════════════════════
     function render(ctx, W, H) {
+        // Screen shake
+        if (screenShake > 0) {
+            const sx = (Math.random() - 0.5) * screenShakeIntensity * 2;
+            const sy = (Math.random() - 0.5) * screenShakeIntensity * 2;
+            ctx.save();
+            ctx.translate(sx, sy);
+        }
         ctx.fillStyle = '#0a0806'; ctx.fillRect(0, 0, W, H);
 
         // Grid
@@ -1145,33 +1764,159 @@ const Battle = (() => {
             ctx.fillRect(t.x - 5, t.y - 16, 10, 10);
         }
 
-        // Arena bosses
+        // ══ Minibosses (gate phase) ══
+        for (const mb of bossMinibosses) {
+            if (mb.deathTimer > 0 && !mb.alive) {
+                // Death dissolve
+                const dp = mb.deathTimer / 1.0;
+                ctx.globalAlpha = dp * 0.5;
+                ctx.fillStyle = mb.color;
+                ctx.fillRect(mb.x - mb.size/2, mb.y - mb.size/2, mb.size, mb.size);
+                ctx.globalAlpha = 1;
+                continue;
+            }
+            if (!mb.alive) continue;
+            renderMiniboss(ctx, mb);
+        }
+
+        // ══ Arena bosses — full sprite rendering ══
         for (const boss of arenaBosses) {
-            if (!boss.alive) continue;
-            const fl = boss.hitFlash > 0, s = boss.size;
-            ctx.globalAlpha = boss.spawnTimer > 0 ? 0.3 : 1;
-            ctx.fillStyle = fl ? '#fff' : boss.color;
-            ctx.fillRect(boss.x - s*.4, boss.y - s*.5, s*.8, s);
-            ctx.fillRect(boss.x - s*.3, boss.y - s*.8, s*.6, s*.35);
-            ctx.fillStyle = '#ff0'; ctx.fillRect(boss.x - s*.15, boss.y - s*.65, 3, 3); ctx.fillRect(boss.x + s*.05, boss.y - s*.65, 3, 3);
-            ctx.globalAlpha = 0.08 + Math.sin(performance.now()/200)*.04;
-            ctx.fillStyle = boss.color; ctx.beginPath(); ctx.arc(boss.x, boss.y, s*1.2, 0, Math.PI*2); ctx.fill();
+            if (!boss.alive && !bossDeathAnim) continue;
+            if (!boss.alive && bossDeathAnim) {
+                // Boss death dissolve animation
+                const dp = bossDeathAnim.timer / bossDeathAnim.maxTimer;
+                const s = boss.size;
+                ctx.save();
+                ctx.globalAlpha = dp * 0.6;
+                ctx.translate(boss.x, boss.y);
+                // Flickering remnant
+                if (Math.random() > 0.3) {
+                    ctx.fillStyle = boss.color;
+                    ctx.fillRect(-s*.4, -s*.5, s*.8 * dp, s * dp);
+                }
+                ctx.restore();
+                continue;
+            }
+            renderBossSprite(ctx, boss);
+        }
+
+        // ══ Boss bar (top of screen) ══
+        renderBossBar(ctx, W);
+
+        // ══ Miniboss gate progress ══
+        if (bossGateActive) {
+            ctx.save();
+            ctx.textAlign = 'center'; ctx.font = 'bold 12px monospace';
+            ctx.fillStyle = '#ffd700'; ctx.globalAlpha = 0.8;
+            ctx.fillText(`GUARDIANS: ${minibossesDefeated} / ${minibossesRequired}`, W/2, 30);
             ctx.globalAlpha = 1;
-            ctx.fillStyle = '#ffcc44'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
-            ctx.fillText(boss.name.replace(/_/g,' ').toUpperCase(), boss.x, boss.y - s*.85 - 4);
-            const bw = Math.max(s+10, 40), hp = boss.hp/boss.maxHp;
-            ctx.fillStyle = '#111'; ctx.fillRect(boss.x - bw/2 - 1, boss.y - s/2 - 14, bw+2, 6);
-            ctx.fillStyle = hp > .5 ? '#44cc44' : hp > .25 ? '#cccc44' : '#cc4444';
-            ctx.fillRect(boss.x - bw/2, boss.y - s/2 - 13, bw*hp, 4);
+            ctx.restore();
         }
 
         // Player
         if (player.alive && !playerDead) renderMage(ctx, player, arenaMode === 'teams' ? TEAM_COLORS[playerTeam][0] : '#4488ff', arenaMode === 'teams' ? TEAM_COLORS[playerTeam][1] : '#88bbff');
 
+        // ══ Player death animation ══
+        if (playerDeathAnim) {
+            const dp = playerDeathAnim.timer / playerDeathAnim.maxTimer;
+            ctx.save();
+            for (const p of playerDeathAnim.particles) {
+                if (p.life <= 0) continue;
+                ctx.globalAlpha = p.life * 0.8;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+            }
+            // Ghost silhouette
+            if (dp > 0.3) {
+                ctx.globalAlpha = (dp - 0.3) * 0.4;
+                ctx.fillStyle = '#4488ff';
+                ctx.fillRect(playerDeathAnim.x - 5, playerDeathAnim.y - 14, 10, 24);
+            }
+            ctx.restore();
+        }
+
+        // ══ Player respawn shimmer ══
+        if (playerRespawnAnim) {
+            const rp = playerRespawnAnim.timer / 1.0;
+            ctx.save();
+            ctx.globalAlpha = rp * 0.3;
+            const shimR = 20 + (1 - rp) * 30;
+            ctx.strokeStyle = '#88ccff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, shimR, 0, Math.PI * 2);
+            ctx.stroke();
+            // Rising particles
+            for (let i = 0; i < 4; i++) {
+                const a = (performance.now() / 200 + i * Math.PI / 2) % (Math.PI * 2);
+                const px = player.x + Math.cos(a) * shimR * 0.6;
+                const py = player.y + Math.sin(a) * shimR * 0.6 - (1 - rp) * 15;
+                ctx.fillStyle = '#88ccff';
+                ctx.globalAlpha = rp * 0.5;
+                ctx.fillRect(px - 1, py - 1, 3, 3);
+            }
+            ctx.restore();
+        }
+
         // Enemies
         for (const e of getEnemies()) {
             if (!e.alive) continue;
             renderMage(ctx, e, e.color, e.colorLight);
+        }
+
+        // ══ Death effects (explosions) ══
+        for (const de of deathEffects) {
+            ctx.save();
+            for (const p of de.particles) {
+                if (p.life <= 0) continue;
+                ctx.globalAlpha = Math.max(0, p.life) * 0.7;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+            }
+            // Flash ring
+            const flashP = de.timer / de.maxTimer;
+            if (flashP > 0.7) {
+                ctx.globalAlpha = (flashP - 0.7) / 0.3 * 0.4;
+                ctx.strokeStyle = de.color;
+                ctx.lineWidth = 3;
+                const ringR = (1 - flashP) * 80 + 10;
+                ctx.beginPath();
+                ctx.arc(de.x, de.y, ringR, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // ══ Phase transition overlay ══
+        if (phaseTransition) {
+            const pp = phaseTransition.timer / phaseTransition.maxTimer;
+            const boss = phaseTransition.boss;
+            ctx.save();
+            // Darkened overlay
+            ctx.globalAlpha = pp * 0.3;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, W, H);
+            // Pulsing ring around boss
+            ctx.globalAlpha = pp * 0.6;
+            ctx.strokeStyle = boss.color;
+            ctx.lineWidth = 3 + pp * 4;
+            const pr = boss.size * 2 + (1 - pp) * 60;
+            ctx.beginPath();
+            ctx.arc(boss.x, boss.y, pr, 0, Math.PI * 2);
+            ctx.stroke();
+            // Stage text
+            ctx.globalAlpha = pp;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = boss.color;
+            ctx.font = 'bold 18px monospace';
+            ctx.fillText('STAGE ' + phaseTransition.stage, W/2, H/2 - 30);
+            const richData = BOSS_DATA[boss.name];
+            if (richData) {
+                ctx.font = '12px monospace';
+                ctx.fillStyle = richData.colorGlow;
+                ctx.fillText(richData.subtitle, W/2, H/2 - 10);
+            }
+            ctx.restore();
         }
 
         // Melee arcs
@@ -1208,14 +1953,375 @@ const Battle = (() => {
 
         // Respawn overlay
         if (playerDead) {
-            ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+            ctx.save();
+            ctx.globalAlpha = 0.4 + Math.sin(performance.now() / 300) * 0.1;
+            ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
             ctx.globalAlpha = 1; ctx.textAlign = 'center';
+            // Skull icon
+            const skX = W/2, skY = H/2 - 40;
+            ctx.fillStyle = '#ff4444';
+            ctx.fillRect(skX - 8, skY - 8, 16, 14);
+            ctx.fillRect(skX - 10, skY - 6, 20, 10);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(skX - 5, skY - 3, 4, 4);
+            ctx.fillRect(skX + 1, skY - 3, 4, 4);
+            ctx.fillRect(skX - 2, skY + 3, 4, 3);
+            // Text
             ctx.fillStyle = '#ff4444'; ctx.font = 'bold 24px monospace';
-            ctx.fillText('RESPAWNING...', W/2, H/2 - 10);
+            ctx.fillText('YOU DIED', W/2, H/2 + 10);
             ctx.fillStyle = '#ffd700'; ctx.font = '14px monospace';
-            ctx.fillText(Math.ceil(respawnTimer) + 's', W/2, H/2 + 20);
+            const secs = Math.ceil(respawnTimer);
+            ctx.fillText('Respawning in ' + secs + 's...', W/2, H/2 + 35);
+            // Progress bar
+            const barW = 120, barH = 6;
+            const progress = 1 - (respawnTimer / RESPAWN_TIME);
+            ctx.fillStyle = '#222'; ctx.fillRect(W/2 - barW/2, H/2 + 45, barW, barH);
+            ctx.fillStyle = '#ffd700'; ctx.fillRect(W/2 - barW/2, H/2 + 45, barW * progress, barH);
             ctx.restore();
         }
+
+        // ══ Dialogue box ══
+        if (dialogueActive) {
+            ctx.save();
+            const dw = 500, dh = 60;
+            const dx = (W - dw) / 2, dy = H - dh - 30;
+            // Dark background
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#0a0806';
+            ctx.fillRect(dx, dy, dw, dh);
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = dialogueActive.color;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(dx, dy, dw, dh);
+            // Speaker name
+            ctx.fillStyle = dialogueActive.color;
+            ctx.font = 'bold 10px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(dialogueActive.speaker, dx + 10, dy + 16);
+            // Text (typewriter)
+            ctx.fillStyle = '#ddd';
+            ctx.font = '11px monospace';
+            const visibleText = dialogueActive.text.substring(0, dialogueCharIndex);
+            ctx.fillText(visibleText, dx + 10, dy + 38);
+            // Blinking cursor
+            if (dialogueCharIndex < dialogueActive.text.length && Math.sin(performance.now() / 200) > 0) {
+                const tw = ctx.measureText(visibleText).width;
+                ctx.fillStyle = dialogueActive.color;
+                ctx.fillRect(dx + 10 + tw + 2, dy + 28, 6, 12);
+            }
+            // Skip hint
+            if (dialogueCharIndex >= dialogueActive.text.length) {
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = '#888';
+                ctx.font = '8px monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText('...', dx + dw - 10, dy + dh - 8);
+            }
+            ctx.restore();
+        }
+
+        // Close screen shake
+        if (screenShake > 0) {
+            ctx.restore();
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  BOSS SPRITE RENDERER
+    // ════════════════════════════════════════
+    function renderBossSprite(ctx, boss) {
+        const t = performance.now() / 1000;
+        const s = boss.size;
+        const fl = boss.hitFlash > 0;
+        const spawning = boss.spawnTimer > 0;
+        const richData = BOSS_DATA[boss.name];
+        const color = fl ? '#ffffff' : boss.color;
+        const dark = fl ? '#cccccc' : (boss.colorDark || '#880000');
+        const glow = boss.colorGlow || '#ff8888';
+        const f = boss.facing;
+
+        ctx.save();
+        ctx.translate(boss.x, boss.y);
+
+        // Spawn fade-in
+        if (spawning) {
+            ctx.globalAlpha = 0.2 + (1 - boss.spawnTimer / 1.5) * 0.8;
+            // Spawn vortex
+            ctx.strokeStyle = boss.color;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha *= 0.4;
+            for (let ring = 0; ring < 3; ring++) {
+                const rr = s * 1.5 * (1 - boss.spawnTimer / 1.5) + ring * 8;
+                ctx.beginPath();
+                ctx.arc(0, 0, rr, t * 3 + ring, t * 3 + ring + Math.PI);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 0.2 + (1 - boss.spawnTimer / 1.5) * 0.8;
+        }
+
+        // Aura
+        if (boss.aura) {
+            ctx.globalAlpha = 0.15 + Math.sin(t * 3) * 0.08;
+            ctx.fillStyle = boss.aura;
+            ctx.beginPath();
+            ctx.arc(0, 0, s * 1.8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = spawning ? (0.2 + (1 - boss.spawnTimer / 1.5) * 0.8) : 1;
+        }
+
+        // Teleport flash
+        if (boss.teleportFlash > 0) {
+            ctx.globalAlpha = boss.teleportFlash / 0.3 * 0.6;
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(0, 0, s * 1.5, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+
+        // Animation offsets
+        const idleBob = Math.sin(t * 2) * 2;
+        const attackPunch = boss.attackAnimTimer > 0 ? Math.sin(boss.attackAnimTimer * 20) * 4 * f : 0;
+        const hurtShake = boss.hurtAnimTimer > 0 ? (Math.random() - 0.5) * 4 : 0;
+
+        ctx.translate(attackPunch + hurtShake, idleBob);
+        ctx.scale(f, 1); // flip based on facing
+
+        // ── Shadow ──
+        ctx.fillStyle = '#000'; ctx.globalAlpha *= 0.25;
+        ctx.beginPath(); ctx.ellipse(0, s * 0.6, s * 0.6, s * 0.15, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = spawning ? (0.2 + (1 - boss.spawnTimer / 1.5) * 0.8) : 1;
+
+        // ── Legs (animated) ──
+        const walkCycle = Math.sin(t * 4) * 3;
+        ctx.fillStyle = dark;
+        ctx.fillRect(-s * 0.3, s * 0.2 + walkCycle, s * 0.22, s * 0.35);
+        ctx.fillRect(s * 0.08, s * 0.2 - walkCycle, s * 0.22, s * 0.35);
+
+        // ── Body ──
+        ctx.fillStyle = color;
+        // Torso
+        ctx.fillRect(-s * 0.35, -s * 0.3, s * 0.7, s * 0.55);
+        // Shoulder guards
+        ctx.fillStyle = dark;
+        ctx.fillRect(-s * 0.45, -s * 0.3, s * 0.15, s * 0.2);
+        ctx.fillRect(s * 0.3, -s * 0.3, s * 0.15, s * 0.2);
+
+        // ── Arms ──
+        const armSwing = boss.attackAnimTimer > 0 ? -s * 0.4 : Math.sin(t * 3) * 2;
+        ctx.fillStyle = color;
+        ctx.fillRect(-s * 0.5, -s * 0.15 + armSwing * 0.5, s * 0.12, s * 0.35);
+        ctx.fillRect(s * 0.38, -s * 0.15 - armSwing * 0.5, s * 0.12, s * 0.35);
+
+        // ── Weapon (right hand) ──
+        ctx.fillStyle = glow;
+        ctx.globalAlpha *= 0.7 + Math.sin(t * 5) * 0.3;
+        ctx.fillRect(s * 0.4, -s * 0.3 - armSwing * 0.5, s * 0.08, s * 0.5);
+        ctx.fillRect(s * 0.35, -s * 0.35 - armSwing * 0.5, s * 0.18, s * 0.08);
+        ctx.globalAlpha = spawning ? (0.2 + (1 - boss.spawnTimer / 1.5) * 0.8) : 1;
+
+        // ── Head ──
+        ctx.fillStyle = color;
+        const headY = -s * 0.55;
+        ctx.fillRect(-s * 0.25, headY, s * 0.5, s * 0.28);
+
+        // Crown/helm
+        ctx.fillStyle = glow;
+        ctx.fillRect(-s * 0.3, headY - s * 0.1, s * 0.6, s * 0.12);
+        ctx.fillRect(-s * 0.2, headY - s * 0.2, s * 0.1, s * 0.12);
+        ctx.fillRect(s * 0.1, headY - s * 0.2, s * 0.1, s * 0.12);
+        ctx.fillRect(-s * 0.05, headY - s * 0.25, s * 0.1, s * 0.15);
+
+        // Eyes
+        const blink = t % 4;
+        const eyeH = (blink > 3.85 && blink < 3.95) ? 1 : 3;
+        ctx.fillStyle = fl ? '#ff0' : glow;
+        ctx.globalAlpha = 0.9;
+        ctx.fillRect(-s * 0.15, headY + s * 0.08, s * 0.1, eyeH);
+        ctx.fillRect(s * 0.05, headY + s * 0.08, s * 0.1, eyeH);
+        // Glowing eye trail
+        if (boss.stage > 1) {
+            ctx.globalAlpha = 0.3 + Math.sin(t * 8) * 0.15;
+            ctx.fillStyle = glow;
+            ctx.fillRect(-s * 0.15 - 3, headY + s * 0.08, 3, eyeH);
+            ctx.fillRect(s * 0.15, headY + s * 0.08, 3, eyeH);
+        }
+        ctx.globalAlpha = 1;
+
+        // ── Cape/cloak (behind, animated) ──
+        ctx.fillStyle = dark;
+        ctx.globalAlpha = 0.6;
+        const capeWave = Math.sin(t * 2.5);
+        ctx.fillRect(-s * 0.4 + capeWave, s * 0.0, s * 0.8, s * 0.4);
+        ctx.fillRect(-s * 0.35 + capeWave * 1.5, s * 0.3, s * 0.7, s * 0.15);
+        ctx.globalAlpha = 1;
+
+        // ── Stage indicator dots under boss ──
+        if (richData) {
+            ctx.globalAlpha = 0.6;
+            const totalStages = richData.stages.length;
+            const dotW = 5, gap = 3;
+            const startX = -(totalStages * (dotW + gap) - gap) / 2;
+            for (let i = 0; i < totalStages; i++) {
+                ctx.fillStyle = i < boss.stage ? glow : '#333';
+                ctx.fillRect(startX + i * (dotW + gap), s * 0.65, dotW, dotW);
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        ctx.restore();
+    }
+
+    function renderMiniboss(ctx, mb) {
+        const t = performance.now() / 1000;
+        const s = mb.size;
+        const fl = mb.hitFlash > 0;
+        const color = fl ? '#fff' : mb.color;
+        const f = mb.facing;
+
+        ctx.save();
+        ctx.translate(mb.x, mb.y);
+
+        if (mb.spawnTimer > 0) {
+            ctx.globalAlpha = 1 - mb.spawnTimer / 0.8;
+        }
+
+        // Shadow
+        ctx.fillStyle = '#000'; ctx.globalAlpha *= 0.2;
+        ctx.beginPath(); ctx.ellipse(0, s * 0.5, s * 0.4, s * 0.1, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = mb.spawnTimer > 0 ? (1 - mb.spawnTimer / 0.8) : 1;
+
+        const bob = Math.sin(t * 3) * 1.5;
+        ctx.translate(0, bob);
+        ctx.scale(f, 1);
+
+        // Body
+        ctx.fillStyle = color;
+        ctx.fillRect(-s * 0.3, -s * 0.3, s * 0.6, s * 0.5);
+        // Head
+        ctx.fillRect(-s * 0.25, -s * 0.55, s * 0.5, s * 0.3);
+        // Eyes
+        ctx.fillStyle = fl ? '#ff0' : '#ff4444';
+        ctx.fillRect(-s * 0.12, -s * 0.42, 3, 3);
+        ctx.fillRect(s * 0.05, -s * 0.42, 3, 3);
+        // Legs
+        const wc = Math.sin(t * 5) * 2;
+        ctx.fillStyle = color;
+        ctx.fillRect(-s * 0.2, s * 0.15 + wc, s * 0.15, s * 0.25);
+        ctx.fillRect(s * 0.05, s * 0.15 - wc, s * 0.15, s * 0.25);
+        // Weapon
+        ctx.fillStyle = '#aaa';
+        ctx.fillRect(s * 0.3, -s * 0.4, 3, s * 0.5);
+
+        // HP bar above
+        ctx.scale(f, 1); // unflip for text
+        const bw = s + 6;
+        const hp = mb.hp / mb.maxHp;
+        ctx.fillStyle = '#111';
+        ctx.fillRect(-bw / 2, -s * 0.7, bw, 4);
+        ctx.fillStyle = hp > 0.5 ? '#44cc44' : hp > 0.25 ? '#cccc44' : '#cc4444';
+        ctx.fillRect(-bw / 2, -s * 0.7, bw * hp, 4);
+        // Name
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = mb.color;
+        ctx.font = 'bold 7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(mb.name.toUpperCase(), 0, -s * 0.75);
+
+        ctx.restore();
+    }
+
+    function renderBossBar(ctx, W) {
+        if (arenaBosses.length === 0) return;
+        const boss = arenaBosses[0];
+        if (!boss || (!boss.alive && !bossDeathAnim)) return;
+
+        const richData = BOSS_DATA[boss.name];
+        const barW = W * 0.6;
+        const barH = 10;
+        const barX = (W - barW) / 2;
+        const barY = 15;
+        const hp = Math.max(0, boss.hp / boss.maxHp);
+
+        ctx.save();
+
+        // Background
+        ctx.fillStyle = '#0a0806';
+        ctx.globalAlpha = 0.8;
+        ctx.fillRect(barX - 4, barY - 18, barW + 8, barH + 28);
+        ctx.globalAlpha = 1;
+
+        // Border
+        ctx.strokeStyle = richData ? richData.color : boss.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(barX - 2, barY - 1, barW + 4, barH + 2);
+
+        // HP bar background
+        ctx.fillStyle = '#1a1510';
+        ctx.fillRect(barX, barY, barW, barH);
+
+        // HP fill with gradient
+        const barColor = richData ? richData.color : (hp > 0.5 ? '#44cc44' : hp > 0.25 ? '#cccc44' : '#cc4444');
+        ctx.fillStyle = barColor;
+        ctx.fillRect(barX, barY, barW * hp, barH);
+
+        // Damage flash (white overlay on recent damage)
+        if (boss.hitFlash > 0) {
+            ctx.globalAlpha = boss.hitFlash / 0.15 * 0.4;
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(barX, barY, barW * hp, barH);
+            ctx.globalAlpha = 1;
+        }
+
+        // Shimmer effect on bar
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = '#fff';
+        const shimX = ((performance.now() / 15) % (barW + 40)) - 20;
+        ctx.fillRect(barX + shimX, barY, 20, barH);
+        ctx.globalAlpha = 1;
+
+        // Boss name
+        ctx.textAlign = 'center';
+        ctx.fillStyle = richData ? richData.colorGlow : '#ffd700';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText(richData ? richData.title : boss.name.toUpperCase(), W / 2, barY - 5);
+
+        // Subtitle
+        if (richData) {
+            ctx.fillStyle = '#888';
+            ctx.font = '7px monospace';
+            ctx.fillText(richData.subtitle, W / 2, barY + barH + 10);
+        }
+
+        // Stage diamonds
+        if (richData) {
+            const totalStages = richData.stages.length;
+            const diamondSize = 4;
+            const gap = 10;
+            const startX = W / 2 - ((totalStages - 1) * gap) / 2;
+            for (let i = 0; i < totalStages; i++) {
+                const dx = startX + i * gap;
+                const dy = barY + barH + 18;
+                ctx.save();
+                ctx.translate(dx, dy);
+                ctx.rotate(Math.PI / 4);
+                if (i < boss.stage) {
+                    ctx.fillStyle = richData.color;
+                    ctx.fillRect(-diamondSize / 2, -diamondSize / 2, diamondSize, diamondSize);
+                } else {
+                    ctx.strokeStyle = '#555';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(-diamondSize / 2, -diamondSize / 2, diamondSize, diamondSize);
+                }
+                ctx.restore();
+            }
+        }
+
+        // HP text
+        ctx.fillStyle = '#ddd';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(Math.ceil(boss.hp) + ' / ' + boss.maxHp, barX + barW, barY + barH + 10);
+
+        ctx.restore();
     }
 
     function renderMage(ctx, mage, color, light) {
