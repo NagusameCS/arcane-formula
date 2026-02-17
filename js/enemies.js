@@ -40,12 +40,12 @@ const Enemies = (() => {
     };
 
     const BOSSES = {
-        'Pharaoh Khet':     { hp: 300, speed: 50, size: 24, color: '#ffd700', dmg: 20, xp: 200, phases: 3 },
-        'Lord Thanatos':    { hp: 350, speed: 60, size: 22, color: '#ff4500', dmg: 25, xp: 250, phases: 3 },
-        'Elder Thornback':  { hp: 400, speed: 35, size: 28, color: '#228b22', dmg: 18, xp: 300, phases: 3 },
-        'Archon Solaris':   { hp: 320, speed: 70, size: 20, color: '#ffffff', dmg: 22, xp: 280, phases: 3 },
-        'Core Override':    { hp: 280, speed: 80, size: 20, color: '#00ffff', dmg: 20, xp: 260, phases: 3 },
-        'Lich King Morthul':{ hp: 500, speed: 45, size: 26, color: '#9b59b6', dmg: 30, xp: 500, phases: 4 },
+        'Pharaoh Khet':     { hp: 1500, speed: 50, size: 24, color: '#ffd700', dmg: 20, xp: 200, phases: 3 },
+        'Lord Thanatos':    { hp: 1750, speed: 60, size: 22, color: '#ff4500', dmg: 25, xp: 250, phases: 3 },
+        'Elder Thornback':  { hp: 2000, speed: 35, size: 28, color: '#228b22', dmg: 18, xp: 300, phases: 3 },
+        'Archon Solaris':   { hp: 1600, speed: 70, size: 20, color: '#ffffff', dmg: 22, xp: 280, phases: 3 },
+        'Core Override':    { hp: 1400, speed: 80, size: 20, color: '#00ffff', dmg: 20, xp: 260, phases: 3 },
+        'Lich King Morthul':{ hp: 2500, speed: 45, size: 26, color: '#9b59b6', dmg: 30, xp: 500, phases: 4 },
     };
 
     let enemies = [];
@@ -101,8 +101,34 @@ const Enemies = (() => {
         }
     }
 
+    // Random spells for non-boss enemies (half player mana cost equivalent)
+    const MOB_SPELL_EXPRS = [
+        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx))*250*(t-i*0.03)', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx))*250*(t-i*0.03)', emitExpr: 'i*0.03', widthExpr: '3', name: 'bolt' },
+        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx)+sin(t*3)*0.3)*180*t', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx)+sin(t*3)*0.3)*180*t', emitExpr: 'i*0.04', widthExpr: '4', name: 'wave' },
+        { xExpr: 'cx+cos(atan2(cy2-cy,cx2-cx)+i*0.4)*140*t', yExpr: 'cy+sin(atan2(cy2-cy,cx2-cx)+i*0.4)*140*t', emitExpr: 'i*0.05', widthExpr: '3', name: 'scatter' },
+    ];
+
     function createEnemy(name, stats, tileX, tileY, isBoss) {
         uidCounter++;
+        // Assign a random spell to non-boss enemies
+        let mobSpell = null;
+        if (!isBoss && stats.behavior !== 'boss') {
+            const spellT = MOB_SPELL_EXPRS[Math.floor(seededRandom() * MOB_SPELL_EXPRS.length)];
+            try {
+                mobSpell = {
+                    cost: 50, // half of 100 mana
+                    xFn: Parser.compile(spellT.xExpr),
+                    yFn: Parser.compile(spellT.yExpr),
+                    emitDelayFn: Parser.compile(spellT.emitExpr),
+                    widthFn: Parser.compile(spellT.widthExpr),
+                    xExpr: spellT.xExpr,
+                    yExpr: spellT.yExpr,
+                    emitExpr: spellT.emitExpr,
+                    widthExpr: spellT.widthExpr,
+                    name: spellT.name,
+                };
+            } catch(e) {}
+        }
         return {
             uid: uidCounter,
             name, isBoss,
@@ -127,6 +153,10 @@ const Enemies = (() => {
             attackRange: isBoss ? 100 : 40,
             spawnTimer: 0.5 + seededRandom() * 0.5,
             tauntTimer: 0,
+            // Mob spell (non-boss only)
+            spell: mobSpell,
+            mana: isBoss ? 0 : 50,
+            spellCd: 4 + seededRandom() * 5,
             // Animation state
             animTimer: 0,
             animFrame: 0,
@@ -371,6 +401,23 @@ const Enemies = (() => {
                 case 'boss':
                     updateBoss(e, target, dt, dungeon, closestDist);
                     break;
+            }
+
+            // ── Mob spell casting (non-boss enemies with spells) ──
+            if (!e.isBoss && e.spell && e.aggro && target) {
+                if (e.spellCd !== undefined) e.spellCd -= dt;
+                e.mana = Math.min(50, (e.mana || 0) + dt * 2); // slow mana regen
+                if (e.spellCd <= 0 && e.mana >= e.spell.cost && closestDist < 200) {
+                    e.mana -= e.spell.cost;
+                    e.spellCd = 5 + Math.random() * 4;
+                    try {
+                        const cast = ArconSystem.castSpell(e.spell,
+                            { id: 'enemy_' + e.uid, x: e.x, y: e.y },
+                            target, target.x, target.y);
+                        // Store enemy casts in effects so they render
+                        if (cast) effects.push({ type: 'spell-cast', cast: cast });
+                    } catch(err) {}
+                }
             }
 
             // ── Animation state tracking ──

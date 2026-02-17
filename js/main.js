@@ -111,8 +111,8 @@
             ? 'Create or join a party to battle.'
             : 'Create or join a party for co-op.';
 
-        // Show solo button for campaign
-        document.getElementById('soloBtn').classList.toggle('hidden', gameMode !== 'campaign');
+        // Show solo button for campaign AND pvp
+        document.getElementById('soloBtn').classList.remove('hidden');
 
         // If already in a party, jump straight to party panel
         if (inParty && Network.isConnected()) {
@@ -248,6 +248,8 @@
     document.getElementById('soloBtn').addEventListener('click', () => {
         sfx();
         document.getElementById('lobby').classList.add('hidden');
+        // For PvP, set solo mode
+        if (gameMode === 'pvp') { pvpMode = 'solo'; }
         state = 'spellbook';
         Spellbook.init(onPlayerReady);
         Spellbook.show();

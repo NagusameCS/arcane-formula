@@ -82,12 +82,13 @@ const Campaign = (() => {
     let showingLevelUp = false;
     let levelUpQueue = 0; // Pending level-ups to show
 
-    // Co-op voting system (3 votes per player, overlap-based resolution)
-    let coopVotes = {}; // { peerId: [skill1, skill2, skill3] }
-    let myVotes = [];   // array of up to 3 skill keys
-    const MAX_VOTES = 3;
-    let voteTimeout = null;
-    let isCoopMode = false; // Set to true when allies exist
+    // Round-robin skill chooser (replaces voting system)
+    // One random player gets to choose, then another, etc.
+    let roundRobinChooser = ''; // peerId of current chooser ('' = local player)
+    let isMyTurn = false;       // true when local player picks
+    let isCoopMode = false;     // true when allies exist
+    let roundRobinOrder = [];   // shuffled list of player ids for round-robin
+    let roundRobinIdx = 0;      // current index into roundRobinOrder
 
     function xpForLevel(lvl) { return Math.floor(40 + lvl * 25 + lvl * lvl * 5); }
 
@@ -181,10 +182,15 @@ const Campaign = (() => {
         for (const bot of bots) {
             bot.x = player.x + (Math.random() - 0.5) * 40;
             bot.y = player.y + (Math.random() - 0.5) * 40;
+            bot.maxHp = getMaxHP();
             bot.hp = bot.maxHp;
             bot.mana = getMaxMana();
+            bot.speed = getSpeed();
+            bot.level = playerLevel;
             bot.dashing = false;
             bot.dashCooldown = 0;
+            bot.invulnTimer = 0;
+            bot.deathTimer = 0;
             bot.aiThinkTimer = Math.random() * BOT_THINK_RATE;
             bot.aiTargetX = bot.x;
             bot.aiTargetY = bot.y;
@@ -192,6 +198,9 @@ const Campaign = (() => {
             bot.meleeCooldown = 0;
             bot.hitFlash = 0;
             allies.push(bot);
+            ArconSystem.onManaReturn(bot.id, (count) => {
+                bot.mana = Math.min(getMaxMana(), bot.mana + count);
+            });
         }
         playerSpells = compiledSpells;
         playerCasts = [];
@@ -934,10 +943,26 @@ const Campaign = (() => {
                 break;
             }
             case 'campaign-vote': {
-                // Ally voted for skills (array of up to 3)
-                coopVotes[pid] = data.skills || [data.skill]; // backwards compat
-                updateVoteDisplay();
-                checkVoteConsensus();
+                // Legacy vote handler — ignored (replaced by round-robin)
+                break;
+            }
+            case 'campaign-skill-spend': {
+                // Linked skill points: another player chose a skill for the whole party
+                if (data.skill && skills.hasOwnProperty(data.skill)) {
+                    spendSkillPoint(data.skill);
+                    // Advance round-robin and close/advance level-up UI
+                    roundRobinIdx++;
+                    levelUpQueue--;
+                    if (levelUpQueue > 0) {
+                        setTimeout(() => { showLevelUpUI(); }, 800);
+                    } else {
+                        setTimeout(() => {
+                            const overlay = document.getElementById('levelup-overlay');
+                            if (overlay) overlay.classList.add('hidden');
+                            showingLevelUp = false;
+                        }, 600);
+                    }
+                }
                 break;
             }
             case 'campaign-switch': {
@@ -1197,11 +1222,31 @@ const Campaign = (() => {
         ctx.restore();
     }
 
-    // ── SKILL POINT ALLOCATION UI (with co-op voting) ──
+    // ── SKILL POINT ALLOCATION UI (round-robin chooser, linked skill points) ──
     function showLevelUpUI() {
-        isCoopMode = Network.isConnected() && allies.length > 0;
-        coopVotes = {};
-        myVotes = [];
+        isCoopMode = Network.isConnected() && allies.filter(a => !a.isBot).length > 0;
+
+        // Build round-robin order: shuffle all player ids
+        if (isCoopMode && roundRobinOrder.length === 0) {
+            const ids = ['self', ...Network.getPeerIds()];
+            // Fisher-Yates shuffle
+            for (let i = ids.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [ids[i], ids[j]] = [ids[j], ids[i]];
+            }
+            roundRobinOrder = ids;
+            roundRobinIdx = 0;
+        }
+
+        // Determine whose turn it is
+        if (isCoopMode) {
+            const currentChooser = roundRobinOrder[roundRobinIdx % roundRobinOrder.length];
+            isMyTurn = currentChooser === 'self';
+            roundRobinChooser = currentChooser;
+        } else {
+            isMyTurn = true;
+            roundRobinChooser = 'self';
+        }
 
         // Create overlay
         let overlay = document.getElementById('levelup-overlay');
@@ -1217,7 +1262,7 @@ const Campaign = (() => {
                     <p class="levelup-sub">Choose a stat to improve</p>
                     <div id="vote-status" style="color:#ffd700;font-size:11px;margin-bottom:6px;display:none;"></div>
                     <div class="levelup-skills" id="levelup-skills"></div>
-                    <button class="btn-gold levelup-done" id="levelup-done">CONTINUE</button>
+                    <button class="btn-gold levelup-done hidden" id="levelup-done">CONTINUE</button>
                 </div>
             `;
             document.body.appendChild(overlay);
@@ -1226,149 +1271,63 @@ const Campaign = (() => {
 
         document.getElementById('levelup-level').textContent = 'LEVEL ' + playerLevel;
         const voteStatus = document.getElementById('vote-status');
+        const doneBtn = document.getElementById('levelup-done');
+
         if (isCoopMode) {
             voteStatus.style.display = 'block';
-            voteStatus.textContent = 'Co-op: Pick up to 3 stats! Overlapping choices win.';
+            if (isMyTurn) {
+                voteStatus.textContent = '🎯 YOUR TURN — choose a stat for the whole party!';
+                doneBtn.classList.add('hidden'); // clicking a skill auto-advances
+            } else {
+                const chooserName = roundRobinChooser.substring(0, 8);
+                voteStatus.textContent = '⏳ Waiting for ' + chooserName + ' to choose...';
+                doneBtn.classList.add('hidden');
+            }
         } else {
             voteStatus.style.display = 'none';
+            doneBtn.classList.add('hidden');
         }
         rebuildSkillButtons();
 
-        document.getElementById('levelup-done').onclick = () => {
-            if (isCoopMode && myVotes.length === 0) return; // Must vote in co-op
-            if (isCoopMode) {
-                // Send votes and check consensus
-                Network.send({ type: 'campaign-vote', skills: myVotes });
-                checkVoteConsensus();
-                return;
-            }
-            levelUpQueue--;
-            if (levelUpQueue > 0) {
-                coopVotes = {};
-                myVotes = [];
-                rebuildSkillButtons();
-            } else {
-                overlay.classList.add('hidden');
-                showingLevelUp = false;
-            }
-        };
-
-        // Auto-close vote after 15s in co-op
-        if (isCoopMode) {
-            if (voteTimeout) clearTimeout(voteTimeout);
-            voteTimeout = setTimeout(() => {
-                if (showingLevelUp && myVotes.length === 0) {
-                    // Auto-vote 3 random (no duplicates)
+        // Auto-choose after 15s if it's our turn and we haven't picked
+        if (isCoopMode && isMyTurn) {
+            setTimeout(() => {
+                if (showingLevelUp && isMyTurn && skillPoints > 0) {
                     const keys = Object.keys(skills);
-                    while (myVotes.length < MAX_VOTES && myVotes.length < keys.length) {
-                        const pick = keys[Math.floor(Math.random() * keys.length)];
-                        if (!myVotes.includes(pick)) myVotes.push(pick);
-                    }
-                    Network.send({ type: 'campaign-vote', skills: myVotes });
-                    checkVoteConsensus();
+                    const pick = keys[Math.floor(Math.random() * keys.length)];
+                    applyLinkedSkillPoint(pick);
                 }
             }, 15000);
         }
     }
 
-    function updateVoteDisplay() {
-        const voteStatus = document.getElementById('vote-status');
-        if (!voteStatus || !isCoopMode) return;
-        const totalPlayers = allies.length + 1;
-        const submitted = Object.keys(coopVotes).length + (myVotes.length > 0 ? 1 : 0);
-        // Count how many players picked each skill
-        const voteCounts = {};
-        for (const sk of myVotes) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
-        for (const arr of Object.values(coopVotes)) {
-            for (const sk of arr) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
-        }
-        const voteStrs = Object.entries(voteCounts).map(([k, v]) => k.toUpperCase() + ':' + v).join(' ');
-        voteStatus.textContent = `Players voted: ${submitted}/${totalPlayers} | ${voteStrs || 'none yet'}`;
-        rebuildSkillButtons();
-    }
+    // Apply a skill point and broadcast to all party members (linked)
+    function applyLinkedSkillPoint(skill) {
+        if (skillPoints <= 0) return;
+        spendSkillPoint(skill);
 
-    function checkVoteConsensus() {
-        if (!isCoopMode) return;
-        const totalPlayers = allies.length + 1;
-        const submitted = Object.keys(coopVotes).length + (myVotes.length > 0 ? 1 : 0);
-        if (submitted < totalPlayers) {
-            updateVoteDisplay();
-            return; // Wait for all players
+        // Broadcast to all party members — they apply the same skill
+        if (Network.isConnected()) {
+            Network.send({ type: 'campaign-skill-spend', skill: skill });
         }
 
-        // Gather all vote arrays
-        const allVoteSets = [myVotes];
-        for (const arr of Object.values(coopVotes)) allVoteSets.push(arr);
+        // Advance round-robin
+        roundRobinIdx++;
 
-        // Find overlaps: skills that appear in BOTH players' lists
-        // For >2 players, find skills in the most lists
-        const skillPlayerCount = {};
-        for (const voteSet of allVoteSets) {
-            const unique = [...new Set(voteSet)];
-            for (const sk of unique) {
-                skillPlayerCount[sk] = (skillPlayerCount[sk] || 0) + 1;
-            }
-        }
-
-        // Find the max overlap count
-        let maxOverlap = 0;
-        for (const v of Object.values(skillPlayerCount)) {
-            if (v > maxOverlap) maxOverlap = v;
-        }
-
-        let winner;
-        if (maxOverlap >= 2) {
-            // At least 2 players agree on something — pick the FIRST overlap
-            // "First" = earliest in the ordering of myVotes (local player priority)
-            const overlapping = Object.entries(skillPlayerCount)
-                .filter(([, cnt]) => cnt === maxOverlap)
-                .map(([k]) => k);
-            // Prioritize by vote order: check myVotes first, then ally votes
-            winner = null;
-            for (const sk of myVotes) {
-                if (overlapping.includes(sk)) { winner = sk; break; }
-            }
-            if (!winner) {
-                for (const arr of Object.values(coopVotes)) {
-                    for (const sk of arr) {
-                        if (overlapping.includes(sk)) { winner = sk; break; }
-                    }
-                    if (winner) break;
-                }
-            }
-            if (!winner) winner = overlapping[0]; // fallback
+        // Continue or close
+        levelUpQueue--;
+        if (levelUpQueue > 0) {
+            // Next level-up: determine next chooser
+            setTimeout(() => {
+                showLevelUpUI();
+            }, 800);
         } else {
-            // No overlaps — pick randomly from all voted skills
-            const allSkills = [];
-            for (const voteSet of allVoteSets) allSkills.push(...voteSet);
-            winner = allSkills[Math.floor(Math.random() * allSkills.length)];
-        }
-
-        // Apply the voted skill
-        spendSkillPoint(winner);
-
-        const voteStatus = document.getElementById('vote-status');
-        if (voteStatus) {
-            const method = maxOverlap >= 2 ? 'overlap' : 'random (no overlap)';
-            voteStatus.textContent = `Result: ${winner.toUpperCase()} wins! (${method})`;
-        }
-
-        // Auto-continue after 1.5s
-        setTimeout(() => {
-            levelUpQueue--;
-            if (levelUpQueue > 0) {
-                coopVotes = {};
-                myVotes = [];
-                rebuildSkillButtons();
-                if (document.getElementById('vote-status')) {
-                    document.getElementById('vote-status').textContent = 'Co-op: Pick up to 3 stats!';
-                }
-            } else {
+            setTimeout(() => {
                 const overlay = document.getElementById('levelup-overlay');
                 if (overlay) overlay.classList.add('hidden');
                 showingLevelUp = false;
-            }
-        }, 1500);
+            }, 600);
+        }
     }
 
     function rebuildSkillButtons() {
@@ -1383,56 +1342,37 @@ const Campaign = (() => {
             { key: 'dash', name: 'DASH', desc: '-0.05s dash cooldown', cur: skills.dash, color: '#aa88ff' },
         ];
 
-        // Count votes per skill for display
-        const voteCounts = {};
-        for (const sk of myVotes) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
-        for (const arr of Object.values(coopVotes)) {
-            for (const sk of arr) voteCounts[sk] = (voteCounts[sk] || 0) + 1;
-        }
-
-        const votesLocked = myVotes.length >= MAX_VOTES; // Already submitted max votes
+        const canPick = isMyTurn || !isCoopMode;
 
         for (const s of skillData) {
             const btn = document.createElement('button');
             btn.className = 'levelup-skill-btn';
-            const isMyPick = myVotes.includes(s.key);
-            btn.style.borderColor = isMyPick ? '#fff' : s.color;
-            if (isMyPick) btn.style.boxShadow = '0 0 8px ' + s.color;
-            const voteIndicator = isCoopMode && voteCounts[s.key] ? ` [${voteCounts[s.key]} vote${voteCounts[s.key] > 1 ? 's' : ''}]` : '';
-            const myVoteMarker = isMyPick ? ` ★${myVotes.indexOf(s.key) + 1}` : '';
-            const votesLeftTxt = isCoopMode && !votesLocked ? ` (${MAX_VOTES - myVotes.length} left)` : '';
+            btn.style.borderColor = s.color;
             btn.innerHTML = `
-                <span class="skill-name" style="color:${s.color}">${s.name}${myVoteMarker}</span>
-                <span class="skill-pips">${'|'.repeat(s.cur)}${s.cur > 0 ? '' : '-'}${voteIndicator}</span>
+                <span class="skill-name" style="color:${s.color}">${s.name}</span>
+                <span class="skill-pips">${'|'.repeat(s.cur)}${s.cur > 0 ? '' : '-'}</span>
                 <span class="skill-desc">${s.desc}</span>
             `;
-            if (isCoopMode) {
-                // Co-op mode: clicking toggles vote (up to 3, no dupes)
+            if (canPick && skillPoints > 0) {
                 btn.onclick = () => {
-                    if (isMyPick) {
-                        // Un-vote (toggle off)
-                        myVotes = myVotes.filter(v => v !== s.key);
-                    } else if (myVotes.length < MAX_VOTES) {
-                        // Add vote
-                        myVotes.push(s.key);
-                    }
-                    updateVoteDisplay();
-                    rebuildSkillButtons();
-                };
-                if (!isMyPick && votesLocked) {
-                    btn.style.opacity = '0.4';
-                }
-            } else {
-                // Solo mode: direct spend
-                if (skillPoints > 0) {
-                    btn.onclick = () => {
+                    if (isCoopMode) {
+                        applyLinkedSkillPoint(s.key);
+                    } else {
                         spendSkillPoint(s.key);
-                        rebuildSkillButtons();
-                    };
-                } else {
-                    btn.disabled = true;
-                    btn.style.opacity = '0.4';
-                }
+                        levelUpQueue--;
+                        if (levelUpQueue > 0) {
+                            rebuildSkillButtons();
+                        } else {
+                            const overlay = document.getElementById('levelup-overlay');
+                            if (overlay) overlay.classList.add('hidden');
+                            showingLevelUp = false;
+                        }
+                    }
+                };
+            } else {
+                btn.disabled = true;
+                btn.style.opacity = '0.4';
+                if (isCoopMode && !isMyTurn) btn.style.cursor = 'not-allowed';
             }
             container.appendChild(btn);
         }

@@ -141,6 +141,28 @@ const Network = (() => {
         connected = false;
     }
 
+    // ── Rejoin support ──
+    function savePartyInfo() {
+        try {
+            sessionStorage.setItem('arcform-party', JSON.stringify({
+                code: partyCode, isHost: _isHost, nick: myNick, color: myColor, ts: Date.now(),
+            }));
+        } catch(e) {}
+    }
+    function getSavedParty() {
+        try {
+            const raw = sessionStorage.getItem('arcform-party');
+            if (!raw) return null;
+            const d = JSON.parse(raw);
+            // Expire after 30 minutes
+            if (Date.now() - d.ts > 30 * 60 * 1000) { sessionStorage.removeItem('arcform-party'); return null; }
+            return d;
+        } catch(e) { return null; }
+    }
+    function clearSavedParty() {
+        try { sessionStorage.removeItem('arcform-party'); } catch(e) {}
+    }
+
     function monitorICE(pc, label) {
         if (!pc) return;
         pc.addEventListener('iceconnectionstatechange', () => log(label + ' ICE:' + pc.iceConnectionState));
@@ -227,6 +249,7 @@ const Network = (() => {
                     settled = true;
                     partyCode = code;
                     log('Party live: ' + code);
+                    savePartyInfo();
                     resolve(code);
                 });
 
@@ -283,6 +306,7 @@ const Network = (() => {
                         settled = true;
                         log('Connected!');
                         setupConn(c, c.peer);
+                        savePartyInfo();
                         resolve();
                     });
                     c.on('error', (err) => {
@@ -395,8 +419,13 @@ const Network = (() => {
         getMembers,
         allReady,
         setNick, setColor, setReady,
-        /* legacy compat */
-        createRoom  : createParty,
-        joinRoom    : joinParty,
+        getSavedParty, clearSavedParty,
+        rejoinParty : (callbacks) => {
+            const saved = getSavedParty();
+            if (!saved || !saved.code) return Promise.reject(new Error('No saved party'));
+            myNick = saved.nick || ''; myColor = saved.color || '#4488ff';
+            if (saved.isHost) return createParty(callbacks);
+            return joinParty(saved.code, callbacks);
+        },
     };
 })();
