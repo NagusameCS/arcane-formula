@@ -232,11 +232,46 @@ const Campaign = (() => {
 
         ArconSystem.reset();
         Enemies.reset();
+        Enemies.resetMinotaurTimer();
         Enemies.spawnFromDungeon(currentDungeon);
 
         // Set player arcon color from network
         const playerColor = (typeof Network !== 'undefined' && Network.getColor) ? Network.getColor() : '#4488ff';
         ArconSystem.setOwnerColor('player', playerColor);
+
+        // ── WALL COLLISION: pass dungeon ref to ArconSystem ──
+        ArconSystem.setDungeon(currentDungeon);
+
+        // ── SELF-HIT CALLBACK: heal or 1/2 damage from own particles ──
+        ArconSystem.onSelfHit((ownerId, amount, isHeal) => {
+            if (ownerId === 'player' || ownerId === player.id) {
+                if (isHeal) {
+                    player.hp = Math.min(player.maxHp, player.hp + amount);
+                    // Green heal flash
+                    flashAlpha = Math.max(flashAlpha, 0.08);
+                } else {
+                    // Self-damage: 1/2 (deal 0.5 rounded — minimum 0)
+                    player.hp = Math.max(0, player.hp - 0.5);
+                }
+            } else {
+                // Check allies
+                for (const a of allies) {
+                    if (a.id === ownerId) {
+                        if (isHeal) a.hp = Math.min(a.maxHp, a.hp + amount);
+                        else a.hp = Math.max(0, a.hp - 0.5);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // ── PISTON CALLBACK: knockback enemies on piston hit ──
+        ArconSystem.onPiston((entity, vx, vy) => {
+            if (!entity) return;
+            entity.knockbackVX = vx;
+            entity.knockbackVY = vy;
+            entity.knockbackTimer = 3.0; // bounce for 3 seconds
+        });
 
         ArconSystem.onManaReturn('player', (count) => {
             player.mana = Math.min(getMaxMana(), player.mana + count);
@@ -447,6 +482,10 @@ const Campaign = (() => {
         // Enemies
         const playersArr = [player, ...allies];
         Enemies.update(dt, playersArr, currentDungeon);
+
+        // ── MINOTAUR RANDOM SPAWN ──
+        const difficulty = 1 + currentFloor * 0.3;
+        Enemies.updateMinotaur(dt, player.x, player.y, currentDungeon, difficulty);
 
         // ── BOSS INTRO CUTSCENE (synced to all players) ──
         if (!bossIntroPlayed) {
@@ -673,15 +712,31 @@ const Campaign = (() => {
             const a = arcons[i];
             if (!a.alive || a.ownerId === 'enemy') continue;
 
+            const hasHeal = a.effects && a.effects.includes(ArconSystem.EFFECTS.HEALING);
+            const hasPiston = a.effects && a.effects.includes(ArconSystem.EFFECTS.PISTON);
+
             for (const e of enemies) {
                 if (!e.alive) continue;
                 const dx = a.x - e.x, dy = a.y - e.y;
                 const hitDist = a.width / 2 + e.size / 2;
                 if (dx * dx + dy * dy < hitDist * hitDist) {
                     a.alive = false;
-                    const xp = Enemies.damageEnemy(e, Math.ceil(dmgMul));
-                    if (xp > 0) addXP(xp);
-                    if (Network.isConnected()) Network.send({ type: 'campaign-enemy-dmg', uid: e.uid, dmg: Math.ceil(dmgMul) });
+
+                    if (hasHeal) {
+                        // Healing arcons don't damage enemies
+                    } else {
+                        const xp = Enemies.damageEnemy(e, Math.ceil(dmgMul));
+                        if (xp > 0) addXP(xp);
+                        if (Network.isConnected()) Network.send({ type: 'campaign-enemy-dmg', uid: e.uid, dmg: Math.ceil(dmgMul) });
+                    }
+
+                    // ── PISTON: launch enemy back ──
+                    if (hasPiston && e.alive) {
+                        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                        e.knockbackVX = (dx / dist) * 400;
+                        e.knockbackVY = (dy / dist) * 400;
+                        e.knockbackTimer = 3.0;
+                    }
                     break;
                 }
             }
@@ -1024,6 +1079,12 @@ const Campaign = (() => {
 
         Dungeon.render(ctx, W, H);
         Enemies.render(ctx, cam.x, cam.y);
+
+        // ── MINOTAUR SHADOW DROP-IN ──
+        ctx.save();
+        ctx.scale(ZOOM, ZOOM);
+        Enemies.renderMinotaurShadow(ctx, cam.x, cam.y);
+        ctx.restore();
 
         // Arcons (world coords)
         ctx.save();

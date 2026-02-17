@@ -268,6 +268,41 @@ const Dungeon = (() => {
         const startRoom = rooms[0];
         map[startRoom.cy][startRoom.cx] = TILE.SPAWN;
 
+        // ── LARGE MOB SPAWNS NEAR BOSS ROOM ──
+        // Rooms closest to the boss room get extra enemy packs
+        const bossCenter = { x: bossRoom.cx, y: bossRoom.cy };
+        const nearBossRooms = rooms.filter(r => !r.isBoss && !r.isPuzzle).map(r => {
+            const dx = r.cx - bossCenter.x, dy = r.cy - bossCenter.y;
+            return { room: r, dist: Math.sqrt(dx * dx + dy * dy) };
+        }).sort((a, b) => a.dist - b.dist);
+        // Top 3 closest rooms to boss get massive spawns
+        const guardsToSpawn = Math.min(3, nearBossRooms.length);
+        for (let gi = 0; gi < guardsToSpawn; gi++) {
+            const gRoom = nearBossRooms[gi].room;
+            const extraCount = 6 + Math.floor(sRand() * 5); // 6-10 extra enemies
+            for (let e = 0; e < extraCount; e++) {
+                spawnPoints.push({
+                    x: gRoom.x + 2 + Math.floor(sRand() * (gRoom.w - 4)),
+                    y: gRoom.y + 2 + Math.floor(sRand() * (gRoom.h - 4)),
+                    type: 'enemy',
+                });
+            }
+        }
+        // Also spawn enemies in corridors leading to boss room
+        // Scan area around boss room for walkable floor tiles in corridors
+        const scanRange = 8;
+        for (let sy = bossRoom.y - scanRange; sy <= bossRoom.y + bossRoom.h + scanRange; sy++) {
+            for (let sx = bossRoom.x - scanRange; sx <= bossRoom.x + bossRoom.w + scanRange; sx++) {
+                if (sx < 0 || sx >= MAP_W || sy < 0 || sy >= MAP_H) continue;
+                // Skip tiles inside the boss room itself
+                if (sx >= bossRoom.x && sx < bossRoom.x + bossRoom.w &&
+                    sy >= bossRoom.y && sy < bossRoom.y + bossRoom.h) continue;
+                if (map[sy][sx] === TILE.FLOOR && sRand() < 0.12) {
+                    spawnPoints.push({ x: sx, y: sy, type: 'enemy' });
+                }
+            }
+        }
+
         // Stairs
         const exitRoom = rooms[Math.max(0, rooms.length - 2)];
         map[exitRoom.cy][exitRoom.cx] = TILE.STAIRS_DOWN;

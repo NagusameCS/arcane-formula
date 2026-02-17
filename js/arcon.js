@@ -1,8 +1,11 @@
 // -----------------------------------------
-//  ARCON PARTICLE SYSTEM (v3)
+//  ARCON PARTICLE SYSTEM (v4)
 //  -- Instant mana return on arcon death
 //  -- Better blocking: stationary arcons have 3x collision radius
 //  -- Campaign mode: no hardcoded bounds, uses world coords
+//  -- Spell effects: healing, bounce, piston, damage
+//  -- Wall collision: arcons blocked by wall tiles
+//  -- Self-damage: own particles deal 1/2 dmg (heal if healing effect)
 // -----------------------------------------
 
 const ArconSystem = (() => {
@@ -11,18 +14,32 @@ const ArconSystem = (() => {
     const MAX_ARCONS = 600;       // Hard cap on total arcons
     const MAX_CONTRAILS = 800;    // Hard cap on contrails
 
+    // ── SPELL EFFECT TYPES ──
+    const EFFECTS = {
+        HEALING: 'healing',     // Heals on hit instead of damaging
+        BOUNCE:  'bounce',      // Bounces off walls instead of dying
+        PISTON:  'piston',      // Launches hit target back, they bounce 3s
+        DAMAGE:  'damage',      // Extra damage multiplier (default)
+    };
+
     let arcons = [];
     let contrails = [];
     let manaReturnCallbacks = {}; // ownerId -> callback(count)
     let boundsMode = 'arena'; // 'arena' = 960x540, 'dungeon' = no bounds
     let worldBounds = null; // { x, y, w, h } for dungeon mode
     let ownerColors = {}; // ownerId -> { r, g, b }
+    let dungeonRef = null; // Reference to current dungeon for wall checks
+    let selfHitCallback = null; // callback(ownerId, amount, isHeal) for self-damage/heal
+    let pistonCallback = null;  // callback(entityId, vx, vy) for knockback
 
-    function reset() { arcons = []; contrails = []; manaReturnCallbacks = {}; ownerColors = {}; }
+    function reset() { arcons = []; contrails = []; manaReturnCallbacks = {}; ownerColors = {}; dungeonRef = null; }
     function onManaReturn(ownerId, cb) { manaReturnCallbacks[ownerId] = cb; }
     function returnMana(ownerId, count) {
         if (manaReturnCallbacks[ownerId]) manaReturnCallbacks[ownerId](count);
     }
+    function onSelfHit(cb) { selfHitCallback = cb; }
+    function onPiston(cb) { pistonCallback = cb; }
+    function setDungeon(d) { dungeonRef = d; }
 
     function setOwnerColor(ownerId, hexColor) {
         const r = parseInt(hexColor.slice(1,3), 16) || 100;
@@ -48,6 +65,32 @@ const ArconSystem = (() => {
         }
         // Arena mode (PvP)
         return x < -50 || x > 1010 || y < -50 || y > 590;
+    }
+
+    // ── WALL COLLISION ──
+    function isInWall(x, y) {
+        if (boundsMode !== 'dungeon' || !dungeonRef) return false;
+        return !Dungeon.isWalkable(dungeonRef, x, y);
+    }
+
+    // Get wall normal for bounce reflection
+    function getWallNormal(x, y, prevX, prevY) {
+        const TS = Dungeon.TILE_SIZE;
+        const tx = Math.floor(x / TS), ty = Math.floor(y / TS);
+        const ptx = Math.floor(prevX / TS), pty = Math.floor(prevY / TS);
+        // Determine which axis crossed the wall boundary
+        if (tx !== ptx && ty !== pty) {
+            // Diagonal: prefer the axis with greater movement
+            if (Math.abs(x - prevX) > Math.abs(y - prevY)) {
+                return { nx: tx > ptx ? -1 : 1, ny: 0 };
+            } else {
+                return { nx: 0, ny: ty > pty ? -1 : 1 };
+            }
+        } else if (tx !== ptx) {
+            return { nx: tx > ptx ? -1 : 1, ny: 0 };
+        } else {
+            return { nx: 0, ny: ty > pty ? -1 : 1 };
+        }
     }
 
     function castSpell(spell, caster, target, cursorX, cursorY, extraVars) {
@@ -107,7 +150,7 @@ const ArconSystem = (() => {
 
         if (typeof Audio !== 'undefined') Audio.cast();
 
-        return { spell, caster, target, pendingArcons, castTime: 0, ownerId: caster.id, active: true };
+        return { spell, caster, target, pendingArcons, castTime: 0, ownerId: caster.id, active: true, effects: spell.effects || [] };
     }
 
     function updateCast(cast, dt) {
@@ -138,6 +181,9 @@ const ArconSystem = (() => {
             width: Math.max(2, Math.min(20, width)),
             ownerId: cast.ownerId, alive: true, lifetime: 0,
             color: getOwnerColor(cast.ownerId),
+            effects: cast.effects || spell.effects || [],
+            // Bounce physics state (set when arcon switches to physics mode)
+            bounceMode: false, vx: 0, vy: 0, bounceTimer: 0,
         };
     }
 
@@ -167,22 +213,78 @@ const ArconSystem = (() => {
             a.prevX = a.x;
             a.prevY = a.y;
 
-            const vars = { ...a.castVars, i: a.i, t: a.t, rand: a.randSeed };
-            const enemy = entities.find(e => e.id !== a.ownerId);
-            if (enemy) { vars['enemy.x'] = enemy.x; vars['enemy.y'] = enemy.y; }
+            // ── BOUNCE MODE: physics-based movement ──
+            if (a.bounceMode) {
+                a.bounceTimer -= dt;
+                if (a.bounceTimer <= 0) { a.alive = false; continue; }
+                a.x += a.vx * dt;
+                a.y += a.vy * dt;
+                // Bounce off walls
+                if (isInWall(a.x, a.y)) {
+                    const norm = getWallNormal(a.x, a.y, a.prevX, a.prevY);
+                    if (norm.nx !== 0) a.vx = -a.vx * 0.85;
+                    if (norm.ny !== 0) a.vy = -a.vy * 0.85;
+                    a.x = a.prevX + a.vx * dt;
+                    a.y = a.prevY + a.vy * dt;
+                    // Spark on bounce
+                    if (contrails.length < MAX_CONTRAILS) {
+                        contrails.push({ x: a.x, y: a.y, size: a.width, life: 0.2, maxLife: 0.2, color: { r: 255, g: 200, b: 80 } });
+                    }
+                }
+                // Bounce off arena edges in PvP
+                if (boundsMode === 'arena') {
+                    if (a.x < 0 || a.x > 960) { a.vx = -a.vx * 0.85; a.x = Math.max(1, Math.min(959, a.x)); }
+                    if (a.y < 0 || a.y > 540) { a.vy = -a.vy * 0.85; a.y = Math.max(1, Math.min(539, a.y)); }
+                }
+            } else {
+                // ── FORMULA-BASED movement ──
+                const vars = { ...a.castVars, i: a.i, t: a.t, rand: a.randSeed };
+                const enemy = entities.find(e => e.id !== a.ownerId);
+                if (enemy) { vars['enemy.x'] = enemy.x; vars['enemy.y'] = enemy.y; }
 
-            try { a.x = a.xFn(vars); a.y = a.yFn(vars); } catch(e) { a.alive = false; continue; }
-            if (isNaN(a.x) || isNaN(a.y)) { a.alive = false; continue; }
+                try { a.x = a.xFn(vars); a.y = a.yFn(vars); } catch(e) { a.alive = false; continue; }
+                if (isNaN(a.x) || isNaN(a.y)) { a.alive = false; continue; }
 
-            try { if (a.widthFn) a.width = Math.max(2, Math.min(20, a.widthFn(vars))); } catch(e) {}
+                try { if (a.widthFn) a.width = Math.max(2, Math.min(20, a.widthFn(vars))); } catch(e) {}
+            }
 
             if (a.lifetime > MAX_LIFETIME) { a.alive = false; continue; }
             if (isOutOfBounds(a.x, a.y)) { a.alive = false; continue; }
 
+            // ── WALL COLLISION ──
+            if (!a.bounceMode && isInWall(a.x, a.y)) {
+                const hasB = a.effects && a.effects.includes(EFFECTS.BOUNCE);
+                if (hasB) {
+                    // Switch to physics/bounce mode
+                    const spd = Math.sqrt((a.x - a.prevX) ** 2 + (a.y - a.prevY) ** 2) / Math.max(dt, 0.001);
+                    const norm = getWallNormal(a.x, a.y, a.prevX, a.prevY);
+                    const dx = a.x - a.prevX, dy = a.y - a.prevY;
+                    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                    let vx = (dx / len) * spd, vy = (dy / len) * spd;
+                    // Reflect velocity
+                    if (norm.nx !== 0) vx = -vx * 0.85;
+                    if (norm.ny !== 0) vy = -vy * 0.85;
+                    a.bounceMode = true;
+                    a.vx = vx; a.vy = vy;
+                    a.bounceTimer = 4.0; // 4s bounce lifetime
+                    a.x = a.prevX; a.y = a.prevY;
+                    // Bounce spark
+                    if (contrails.length < MAX_CONTRAILS) {
+                        contrails.push({ x: a.x, y: a.y, size: a.width * 1.5, life: 0.3, maxLife: 0.3, color: { r: 100, g: 255, b: 200 } });
+                    }
+                } else {
+                    // No bounce — die on wall
+                    a.alive = false;
+                    continue;
+                }
+            }
+
             // Contrail (respect density setting)
             const contrailChance = density === 'low' ? 0.2 : density === 'medium' ? 0.5 : 1;
             if (contrails.length < MAX_CONTRAILS && Math.random() < contrailChance) {
-                contrails.push({ x: a.x, y: a.y, size: a.width * 0.6, life: 0.25, maxLife: 0.25, color: a.color });
+                const hasHeal = a.effects && a.effects.includes(EFFECTS.HEALING);
+                const trailColor = hasHeal ? { r: 80, g: 255, b: 120 } : a.color;
+                contrails.push({ x: a.x, y: a.y, size: a.width * 0.6, life: 0.25, maxLife: 0.25, color: trailColor });
             }
         }
 
@@ -196,9 +298,55 @@ const ArconSystem = (() => {
             const a = arcons[i];
             if (!a.alive) continue;
             const spd = speed(a);
+            const hasHeal = a.effects && a.effects.includes(EFFECTS.HEALING);
+            const hasPiston = a.effects && a.effects.includes(EFFECTS.PISTON);
 
             for (const ent of entities) {
-                if (ent.id === a.ownerId) continue;
+                // ── SELF-HIT CHECK ──
+                if (ent.id === a.ownerId) {
+                    // Allow self-hit: 1/2 damage, or heal if healing effect
+                    if (!hasHeal && spd < MIN_SPEED_DMG) continue; // too slow
+                    const dx = a.x - ent.x, dy = a.y - ent.y;
+                    const hitDist = a.width / 2 + ent.hitRadius;
+                    if (dx * dx + dy * dy < hitDist * hitDist) {
+                        // Only self-hit if arcon has been alive > 0.15s (prevent instant self-damage on cast)
+                        if (a.lifetime < 0.15) continue;
+                        if (hasHeal) {
+                            // Heal the owner
+                            if (selfHitCallback) selfHitCallback(a.ownerId, 1, true);
+                            a.alive = false;
+                            // Green heal sparks
+                            const sparkCount = density === 'low' ? 1 : density === 'medium' ? 2 : 3;
+                            for (let p = 0; p < sparkCount; p++) {
+                                contrails.push({
+                                    x: a.x + (Math.random() - .5) * 10, y: a.y + (Math.random() - .5) * 10,
+                                    size: a.width + Math.random() * 3, life: 0.4, maxLife: 0.4,
+                                    color: { r: 50, g: 255, b: 100 },
+                                });
+                            }
+                            break;
+                        } else {
+                            // Self-damage: 1/2 (rounded up)
+                            if (spd >= MIN_SPEED_DMG) {
+                                if (selfHitCallback) selfHitCallback(a.ownerId, 1, false);
+                                ent.hitFlash = 0.1;
+                            }
+                            a.alive = false;
+                            // Red self-hit sparks
+                            const sparkCount = density === 'low' ? 1 : 2;
+                            for (let p = 0; p < sparkCount; p++) {
+                                contrails.push({
+                                    x: a.x + (Math.random() - .5) * 8, y: a.y + (Math.random() - .5) * 8,
+                                    size: a.width * 0.6, life: 0.2, maxLife: 0.2,
+                                    color: { r: 255, g: 80, b: 80 },
+                                });
+                            }
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
                 // Dashing or invuln grants i-frames
                 if (ent.dashing || (ent.invulnTimer && ent.invulnTimer > 0)) continue;
 
@@ -206,9 +354,32 @@ const ArconSystem = (() => {
                 const hitDist = a.width / 2 + ent.hitRadius;
                 if (dx * dx + dy * dy < hitDist * hitDist) {
                     if (spd >= MIN_SPEED_DMG) {
-                        ent.hp = Math.max(0, ent.hp - 1);
-                        ent.hitFlash = 0.15;
-                        if (typeof Audio !== 'undefined') Audio.hit();
+                        if (hasHeal) {
+                            // Healing effect on allies — heal instead of damage
+                            // (In PvP this still heals the non-owner entity)
+                        } else {
+                            ent.hp = Math.max(0, ent.hp - 1);
+                            ent.hitFlash = 0.15;
+                            if (typeof Audio !== 'undefined') Audio.hit();
+                        }
+
+                        // ── PISTON KNOCKBACK ──
+                        if (hasPiston && ent.hp > 0) {
+                            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                            const knockSpeed = 400;
+                            const kvx = (dx / dist) * knockSpeed;
+                            const kvy = (dy / dist) * knockSpeed;
+                            if (pistonCallback) pistonCallback(ent, kvx, kvy);
+                            // Piston impact sparks
+                            const pSparks = density === 'low' ? 2 : 4;
+                            for (let p = 0; p < pSparks; p++) {
+                                contrails.push({
+                                    x: a.x + (Math.random() - .5) * 12, y: a.y + (Math.random() - .5) * 12,
+                                    size: a.width * 1.2 + Math.random() * 4, life: 0.4, maxLife: 0.4,
+                                    color: { r: 255, g: 160, b: 40 },
+                                });
+                            }
+                        }
                     }
                     a.alive = false;
                     // Hit sparks (respect density)
@@ -315,15 +486,24 @@ const ArconSystem = (() => {
         ctx.globalAlpha = 1;
         for (const a of arcons) {
             if (!a.alive) continue;
+            const hasHeal = a.effects && a.effects.includes(EFFECTS.HEALING);
+            const hasBounce = a.effects && a.effects.includes(EFFECTS.BOUNCE);
+            const hasPiston = a.effects && a.effects.includes(EFFECTS.PISTON);
+            // Color override for effects
+            let col = a.color;
+            if (hasHeal) col = { r: 60, g: 255, b: 120 };
+            else if (hasPiston) col = { r: 255, g: 160, b: 40 };
+            else if (hasBounce && a.bounceMode) col = { r: 100, g: 220, b: 255 };
+
             ctx.globalAlpha = 0.25;
-            ctx.fillStyle = `rgb(${a.color.r},${a.color.g},${a.color.b})`;
+            ctx.fillStyle = `rgb(${col.r},${col.g},${col.b})`;
             const gs = a.width * 2;
             ctx.fillRect(Math.floor(a.x - gs/2), Math.floor(a.y - gs/2), Math.ceil(gs), Math.ceil(gs));
             ctx.globalAlpha = 0.85;
-            ctx.fillStyle = `rgb(${Math.min(255,a.color.r+80)},${Math.min(255,a.color.g+80)},${Math.min(255,a.color.b+80)})`;
+            ctx.fillStyle = `rgb(${Math.min(255,col.r+80)},${Math.min(255,col.g+80)},${Math.min(255,col.b+80)})`;
             ctx.fillRect(Math.floor(a.x - a.width/2), Math.floor(a.y - a.width/2), Math.ceil(a.width), Math.ceil(a.width));
             ctx.globalAlpha = 1;
-            ctx.fillStyle = '#fff';
+            ctx.fillStyle = hasHeal ? '#aaffcc' : '#fff';
             ctx.fillRect(Math.floor(a.x - 1), Math.floor(a.y - 1), 2, 2);
         }
         ctx.globalAlpha = 1;
@@ -332,5 +512,6 @@ const ArconSystem = (() => {
     return {
         reset, castSpell, updateCast, updateArcons, countActive, countPending,
         render, getArcons: () => arcons, onManaReturn, setBoundsMode, setOwnerColor,
+        setDungeon, onSelfHit, onPiston, EFFECTS,
     };
 })();

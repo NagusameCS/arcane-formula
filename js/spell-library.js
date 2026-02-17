@@ -10,7 +10,7 @@ const SpellLibrary = (() => {
     const _n = n, _v = v, _op = op, _fn = fn;
 
     // ── SPELL CATEGORIES ──
-    const CATEGORIES = ['Offensive', 'Defensive', 'Utility', 'Advanced', 'Chaos', 'Gambling'];
+    const CATEGORIES = ['Offensive', 'Defensive', 'Utility', 'Advanced', 'Chaos', 'Gambling', 'Healing'];
 
     // ── THE LIBRARY ──
     const SPELLS = [
@@ -574,6 +574,89 @@ const SpellLibrary = (() => {
                 op('*', fn('sin', op('*', v('i'), n(0.9))), op('*', n(30), fn('max', n(0), op('-', n(1), op('*', v('t'), n(0.7))))))),
             emit: op('*', v('i'), n(0.02)),
             width: n(4),
+        },
+
+        // ═══════════════════════════════════════
+        //  HEALING — Self-targeting, recovery spells
+        // ═══════════════════════════════════════
+        {
+            name: 'Self Lance', category: 'Healing', cost: 25,
+            desc: 'Conjures spears around you that thrust inward, healing on contact.',
+            effects: ['healing'],
+            // Spears start in a circle 120px away and thrust inward through the player
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                op('*', n(120), op('-', n(1), op('*', v('t'), n(1.5)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))),
+                op('*', n(120), op('-', n(1), op('*', v('t'), n(1.5)))))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(3),
+        },
+        {
+            name: 'Healing Nova', category: 'Healing', cost: 35,
+            desc: 'Ring of healing arcons that contract around you.',
+            effects: ['healing'],
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(2)))),
+                op('*', n(80), fn('max', n(0.05), op('-', n(1), op('*', v('t'), n(0.8))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N'))), op('*', v('t'), n(2)))),
+                op('*', n(80), fn('max', n(0.05), op('-', n(1), op('*', v('t'), n(0.8))))))),
+            emit: n(0),
+            width: n(5),
+        },
+        {
+            name: 'Life Spiral', category: 'Healing', cost: 20,
+            desc: 'A gentle spiral of healing arcons converging on caster.',
+            effects: ['healing'],
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', op('*', v('i'), n(0.6)), op('*', v('t'), n(5)))),
+                op('*', n(60), fn('max', n(0), op('-', n(1), op('*', v('t'), n(1.0))))))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', op('*', v('i'), n(0.6)), op('*', v('t'), n(5)))),
+                op('*', n(60), fn('max', n(0), op('-', n(1), op('*', v('t'), n(1.0))))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Piston Beam', category: 'Offensive', cost: 30,
+            desc: 'A focused beam that launches enemies backwards on hit.',
+            effects: ['piston'],
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(350), op('-', v('t'), op('*', v('i'), n(0.015)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', n(350), op('-', v('t'), op('*', v('i'), n(0.015)))))),
+            emit: op('*', v('i'), n(0.015)),
+            width: n(6),
+        },
+        {
+            name: 'Piston Nova', category: 'Offensive', cost: 40,
+            desc: 'Radial explosion that launches everything away.',
+            effects: ['piston'],
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(200), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', op('*', n(2), v('pi')), op('/', v('i'), v('N')))), op('*', n(200), v('t')))),
+            emit: n(0),
+            width: n(7),
+        },
+        {
+            name: 'Bouncing Bolt', category: 'Offensive', cost: 25,
+            desc: 'A fast bolt that bounces off walls multiple times.',
+            effects: ['bounce'],
+            x: op('+', v('player.x'), op('*', fn('cos', v('aim')), op('*', n(400), op('-', v('t'), op('*', v('i'), n(0.02)))))),
+            y: op('+', v('player.y'), op('*', fn('sin', v('aim')), op('*', n(400), op('-', v('t'), op('*', v('i'), n(0.02)))))),
+            emit: op('*', v('i'), n(0.02)),
+            width: n(4),
+        },
+        {
+            name: 'Ricochet Storm', category: 'Chaos', cost: 40,
+            desc: 'Scatter bolts in all directions — they bounce off everything.',
+            effects: ['bounce'],
+            x: op('+', v('player.x'), op('*', fn('cos', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(300), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('*', v('rand'), op('*', n(2), v('pi')))), op('*', n(300), v('t')))),
+            emit: op('*', v('i'), n(0.01)),
+            width: n(3),
+        },
+        {
+            name: 'Piston Shotgun', category: 'Offensive', cost: 35,
+            desc: 'Wide spread blast that sends enemies flying.',
+            effects: ['piston'],
+            x: op('+', v('player.x'), op('*', fn('cos', op('+', v('aim'), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(0.1)))), op('*', n(300), v('t')))),
+            y: op('+', v('player.y'), op('*', fn('sin', op('+', v('aim'), op('*', op('-', v('i'), op('/', v('N'), n(2))), n(0.1)))), op('*', n(300), v('t')))),
+            emit: n(0),
+            width: n(5),
         },
     ];
 

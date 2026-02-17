@@ -208,6 +208,33 @@ const Spellbook = (() => {
             spell.cost = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
         });
 
+        // ── EFFECT TOGGLES ──
+        if (!spell.effects) spell.effects = [];
+        const effectRow = document.createElement('div');
+        effectRow.className = 'effect-toggles';
+        effectRow.style.cssText = 'display:flex;gap:6px;padding:4px 8px;flex-wrap:wrap;';
+        const EFFECT_OPTIONS = [
+            { id: 'healing', label: '💚 Heal', color: '#2a5a2a' },
+            { id: 'bounce', label: '🔵 Bounce', color: '#2a3a5a' },
+            { id: 'piston', label: '🟠 Piston', color: '#5a3a1a' },
+        ];
+        for (const eff of EFFECT_OPTIONS) {
+            const btn = document.createElement('button');
+            const isActive = spell.effects.includes(eff.id);
+            btn.textContent = eff.label;
+            btn.style.cssText = `padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;border:1px solid ${isActive ? '#fff' : '#555'};background:${isActive ? eff.color : '#222'};color:${isActive ? '#fff' : '#888'};`;
+            btn.addEventListener('click', () => {
+                if (spell.effects.includes(eff.id)) {
+                    spell.effects = spell.effects.filter(e => e !== eff.id);
+                } else {
+                    spell.effects.push(eff.id);
+                }
+                buildEditorPanel();
+            });
+            effectRow.appendChild(btn);
+        }
+        panel.appendChild(effectRow);
+
         // Formula tabs
         const formulaTabs = document.createElement('div');
         formulaTabs.className = 'formula-tabs';
@@ -509,6 +536,7 @@ const Spellbook = (() => {
         const spell = spells[slotIdx];
         spell.name = libSpell.name;
         spell.cost = libSpell.cost;
+        spell.effects = libSpell.effects || [];
         spell.trees = {
             x: Blocks.cloneNode(libSpell.x),
             y: Blocks.cloneNode(libSpell.y),
@@ -559,6 +587,7 @@ const Spellbook = (() => {
                     xExpr, yExpr, emitExpr, widthExpr,
                     cooldown: 0,
                     currentCooldown: 0,
+                    effects: spell.effects || [],
                 });
             } catch (e) {
                 compiled.push({
@@ -605,6 +634,7 @@ const Spellbook = (() => {
         return spells.map(s => ({
             name: s.name,
             cost: s.cost,
+            effects: s.effects || [],
             trees: {
                 x: s.trees.x,
                 y: s.trees.y,
@@ -621,6 +651,7 @@ const Spellbook = (() => {
             if (!d) continue;
             spells[i].name = d.name || spells[i].name;
             spells[i].cost = d.cost || spells[i].cost;
+            spells[i].effects = d.effects || [];
             if (d.trees) {
                 spells[i].trees = {
                     x: d.trees.x ? Blocks.cloneNode(d.trees.x) : spells[i].trees.x,
