@@ -1,107 +1,111 @@
 // ─────────────────────────────────────────────
-//  BATTLE ARENA — PvP with Dash + Instant Mana Return
+//  BATTLE ARENA — Multi-player PvP (2+) with game modes
+//  Modes: FFA, Teams, KOTH, Boss, Gauntlet, Survival,
+//         Target Practice, Duel
 // ─────────────────────────────────────────────
 
 const Battle = (() => {
-    const MANA_MAX = 100;
-    const MANA_REGEN = 3;
-    const MANA_REGEN_BURNOUT = 0.5;
-    const HP_MAX = 100;
-    const BURNOUT_THRESHOLD = 0.7;
-    const BACKLASH_DAMAGE = 10;
-    const DASH_SPEED = 700;
-    const DASH_DURATION = 0.15;
-    const DASH_COOLDOWN = 0.5;
-    const DASH_CHAIN_WINDOW = 0.15;
-    const DASH_INVULN = 0.25;
-    const SYNC_RATE = 1 / 20; // 20 Hz
+    const MANA_MAX = 100, MANA_REGEN = 3, MANA_REGEN_BURNOUT = 0.5;
+    const HP_MAX = 100, BURNOUT_THRESHOLD = 0.7, BACKLASH_DAMAGE = 10;
+    const DASH_SPEED = 700, DASH_DURATION = 0.15, DASH_COOLDOWN = 0.5;
+    const DASH_CHAIN_WINDOW = 0.15, DASH_INVULN = 0.25;
+    const SYNC_RATE = 1 / 20;
+    const MELEE_RANGE = 75, MELEE_ARC = Math.PI * 0.75;
+    const MELEE_COOLDOWN = 0.35, MELEE_DURATION = 0.15, MELEE_DAMAGE = 6;
+    const ARENA_W = 960, ARENA_H = 540;
 
-    // Melee constants
-    const MELEE_RANGE = 75;
-    const MELEE_ARC = Math.PI * 0.75;
-    const MELEE_COOLDOWN = 0.35;
-    const MELEE_DURATION = 0.15;
-    const MELEE_DAMAGE = 6;
+    let player, enemies = {};          // peerId → enemy obj
+    let playerSpells = [], playerCasts = [], enemyCasts = [];
+    let keys = {}, mouse = { x: 480, y: 270 };
+    let gameOver = false, winner = '';
+    let syncTimer = 0, arenaParticles = [];
+    let meleeTimer = 0, meleeCooldown = 0, meleeAngle = 0, meleeHit = false;
+    let enemyMelees = [];
 
-    let player;
-    let enemies = {}; // Map of peerId -> enemy object (supports 2+ players)
-    let playerSpells = [];
-    let playerCasts = [];
-    let enemyCasts = [];
-    let keys = {};
-    let mouse = { x: 480, y: 270 };
-    let gameOver = false;
-    let winner = '';
-    let syncTimer = 0;
-    let arenaParticles = [];
-    let meleeTimer = 0;
-    let meleeCooldown = 0;
-    let meleeAngle = 0;
-    let meleeHit = false;
-    let enemyMelees = []; // visual only
-    let arenaRoomType = 'ffa';
-    let arenaBosses = []; // spawned bosses for boss fight / gauntlet modes
-    let gauntletIndex = 0;
-    let gauntletBossOrder = [];
-    const ENEMY_COLORS = ['#ff4444','#44ff88','#ff88ff','#ffaa22','#22ddff','#cccc44','#ff6688'];
+    // ── Mode state ──
+    let arenaMode = 'ffa';            // current sub-mode
+    let scores = {};                   // peerId → score (kills)
+    let playerScore = 0;
+    let teamAssignments = {};          // peerId → 0 or 1
+    let playerTeam = 0;
+    let teamScores = [0, 0];
 
-    // Helper: get all enemy objects as array
+    // KOTH
+    let kothZone = { x: 480, y: 270, r: 60 };
+    let kothHolder = '';               // 'player' or peerId
+    let kothTimer = 0;
+    const KOTH_WIN = 30;              // seconds to win
+
+    // Boss / Gauntlet
+    let arenaBosses = [], gauntletIndex = 0, gauntletBossOrder = [];
+
+    // Survival
+    let survivalWave = 0, survivalEnemies = [], survivalSpawnTimer = 0;
+    let survivalScore = 0;
+
+    // Target Practice
+    let targetDummies = [], targetTimer = 60, targetHits = 0;
+
+    // Respawn
+    const RESPAWN_TIME = 5;
+    let playerDead = false, respawnTimer = 0, lives = {};
+
+    const ENEMY_COLORS = ['#ff4444','#44ff88','#ff88ff','#ffaa22','#22ddff','#cccc44','#ff6688','#88ff44'];
+    const TEAM_COLORS  = [['#4488ff','#88bbff'], ['#ff4444','#ff8877']];
+
     function getEnemies() { return Object.values(enemies); }
-    // Helper: nearest enemy to player
     function nearestEnemy() {
-        let best = null, bestDist = Infinity;
+        let best = null, bd = Infinity;
         for (const e of getEnemies()) {
-            const dx = e.x - player.x, dy = e.y - player.y;
-            const d = dx*dx + dy*dy;
-            if (d < bestDist) { bestDist = d; best = e; }
+            if (!e.alive) continue;
+            const d = (e.x - player.x) ** 2 + (e.y - player.y) ** 2;
+            if (d < bd) { bd = d; best = e; }
         }
         return best;
     }
 
-    function makeEnemy(peerId, x, y, colorIdx) {
+    function makeEnemy(pid, x, y, idx) {
         return {
-            id: peerId, x: x, y: y,
-            hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
+            id: pid, x, y, hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
             hitFlash: 0, burnout: 0, speed: 150,
             dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
             dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
-            color: ENEMY_COLORS[colorIdx % ENEMY_COLORS.length],
-            colorLight: ENEMY_COLORS[colorIdx % ENEMY_COLORS.length] + '88',
-            alive: true,
+            color: ENEMY_COLORS[idx % ENEMY_COLORS.length],
+            colorLight: ENEMY_COLORS[idx % ENEMY_COLORS.length] + '88',
+            alive: true, score: 0, team: -1,
         };
     }
 
-    function init(compiledSpells, roomType) {
+    // ════════════════════════════════════════
+    //  INIT
+    // ════════════════════════════════════════
+    function init(compiledSpells, mode) {
         ArconSystem.setBoundsMode('arena');
-        arenaRoomType = roomType || 'ffa';
+        arenaMode = mode || 'ffa';
+
         player = {
-            id: 'player', x: 200, y: 270,
-            hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
-            hitFlash: 0, burnout: 0, speed: 150,
+            id: 'player', x: 200, y: 270, hp: HP_MAX, mana: MANA_MAX,
+            hitRadius: 12, hitFlash: 0, burnout: 0, speed: 150,
             dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
-            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
+            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0, alive: true,
         };
         enemies = {};
-
         playerSpells = compiledSpells;
-        playerCasts = [];
-        enemyCasts = [];
-        gameOver = false;
-        winner = '';
-        keys = {};
-        arenaParticles = [];
-        syncTimer = 0;
-        meleeTimer = 0;
-        meleeCooldown = 0;
-        meleeHit = false;
+        playerCasts = []; enemyCasts = [];
+        gameOver = false; winner = '';
+        keys = {}; arenaParticles = [];
+        syncTimer = 0; meleeTimer = 0; meleeCooldown = 0; meleeHit = false;
         enemyMelees = [];
-        arenaBosses = [];
-        gauntletIndex = 0;
+        playerScore = 0; scores = {};
+        playerDead = false; respawnTimer = 0; lives = {};
+        arenaBosses = []; gauntletIndex = 0;
+        survivalWave = 0; survivalEnemies = []; survivalSpawnTimer = 2; survivalScore = 0;
+        targetDummies = []; targetTimer = 60; targetHits = 0;
+        teamScores = [0, 0]; teamAssignments = {};
+        kothHolder = ''; kothTimer = 0;
 
         ArconSystem.reset();
-
-        // Instant mana return callbacks
-        ArconSystem.onManaReturn('player', (count) => { player.mana = Math.min(MANA_MAX, player.mana + count); });
+        ArconSystem.onManaReturn('player', (n) => { player.mana = Math.min(MANA_MAX, player.mana + n); });
 
         document.getElementById('hud').classList.remove('hidden');
         document.getElementById('victory-screen').classList.add('hidden');
@@ -110,65 +114,126 @@ const Battle = (() => {
         keysDiv.innerHTML = '';
         for (let i = 0; i < playerSpells.length; i++) {
             const el = document.createElement('div');
-            el.className = 'spell-key-hud';
-            el.id = `spell-hud-${i}`;
-            el.innerHTML = `<span class="key-num">${i + 1}</span><span>${playerSpells[i].name.substring(0, 4)}</span>`;
+            el.className = 'spell-key-hud'; el.id = 'spell-hud-' + i;
+            el.innerHTML = '<span class="key-num">' + (i + 1) + '</span><span>' + playerSpells[i].name.substring(0, 4) + '</span>';
             keysDiv.appendChild(el);
         }
 
-        // Spawn bosses for custom room types
-        if (arenaRoomType === 'boss') {
+        // Mode label
+        const modeLabel = document.getElementById('pvp-mode-label');
+        const modeNames = { ffa:'FREE FOR ALL', teams:'TEAM DEATHMATCH', koth:'KING OF THE HILL',
+            boss:'BOSS FIGHT', gauntlet:'BOSS GAUNTLET', survival:'SURVIVAL',
+            target:'TARGET PRACTICE', duel:'1v1 DUEL' };
+        if (modeLabel) modeLabel.textContent = modeNames[arenaMode] || arenaMode.toUpperCase();
+
+        // Teams setup
+        if (arenaMode === 'teams') {
+            playerTeam = 0;
+        }
+
+        // Boss / Gauntlet
+        if (arenaMode === 'boss') {
             spawnArenaBoss(randomBossKey());
-        } else if (arenaRoomType === 'gauntlet') {
+        } else if (arenaMode === 'gauntlet') {
             gauntletBossOrder = shuffleArray(Object.keys(Enemies.BOSSES));
-            gauntletIndex = 0;
             spawnArenaBoss(gauntletBossOrder[0]);
         }
-    }
 
-    function randomBossKey() {
-        const keys = Object.keys(Enemies.BOSSES);
-        return keys[Math.floor(Math.random() * keys.length)];
-    }
-
-    function shuffleArray(arr) {
-        const a = [...arr];
-        for (let i = a.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [a[i], a[j]] = [a[j], a[i]];
+        // Survival
+        if (arenaMode === 'survival') {
+            survivalWave = 0;
+            spawnSurvivalWave();
         }
-        return a;
+
+        // Target Practice
+        if (arenaMode === 'target') {
+            spawnTargets();
+        }
+
+        // KOTH
+        if (arenaMode === 'koth') {
+            kothZone = { x: 480, y: 270, r: 60 };
+            kothTimer = 0; kothHolder = '';
+        }
     }
 
-    function spawnArenaBoss(bossKey) {
-        const bossData = Enemies.BOSSES[bossKey];
-        if (!bossData) return;
-        const boss = {
-            name: bossKey,
-            isBoss: true,
-            x: 700, y: 270,
-            hp: bossData.hp, maxHp: bossData.hp,
-            speed: bossData.speed || 40,
-            size: bossData.size || 30,
-            color: bossData.color || '#ff4444',
-            dmg: bossData.dmg || 15,
-            behavior: 'boss',
-            xp: 0, alive: true,
-            hitFlash: 0, attackCd: 0,
-            aiTimer: 0, aiDirX: 0, aiDirY: 0,
-            phase: 1, phaseMax: bossData.phases || 2,
-            aggro: true,
-            aggroRange: 400, attackRange: 100,
-            spawnTimer: 1, tauntTimer: 0,
-            animTimer: 0, animFrame: 0,
-            facing: -1, animState: 'idle',
-            deathTimer: 0, prevX: 0, prevY: 0,
-        };
-        arenaBosses.push(boss);
+    // ════════════════════════════════════════
+    //  BOSS HELPERS
+    // ════════════════════════════════════════
+    function randomBossKey() {
+        const k = Object.keys(Enemies.BOSSES);
+        return k[Math.floor(Math.random() * k.length)];
+    }
+    function shuffleArray(a) {
+        a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a;
+    }
+    function spawnArenaBoss(key) {
+        const bd = Enemies.BOSSES[key]; if (!bd) return;
+        arenaBosses.push({
+            name: key, isBoss: true, x: 700, y: 270,
+            hp: bd.hp, maxHp: bd.hp, speed: bd.speed || 40,
+            size: bd.size || 30, color: bd.color || '#ff4444',
+            dmg: bd.dmg || 15, alive: true, hitFlash: 0, attackCd: 0,
+            phase: 1, phaseMax: bd.phases || 2,
+            spawnTimer: 1, animTimer: 0, animFrame: 0, facing: -1,
+            _meleeHitThisSwing: false,
+        });
     }
 
+    // ════════════════════════════════════════
+    //  SURVIVAL HELPERS
+    // ════════════════════════════════════════
+    function spawnSurvivalWave() {
+        survivalWave++;
+        const count = 3 + survivalWave * 2;
+        for (let i = 0; i < count; i++) {
+            const angle = (Math.PI * 2 / count) * i;
+            const cx = 480, cy = 270, dist = 300;
+            survivalEnemies.push({
+                x: cx + Math.cos(angle) * dist,
+                y: cy + Math.sin(angle) * dist,
+                hp: 3 + survivalWave, maxHp: 3 + survivalWave,
+                speed: 40 + survivalWave * 5, size: 10 + Math.min(survivalWave, 8),
+                color: ENEMY_COLORS[i % ENEMY_COLORS.length],
+                dmg: 5 + survivalWave * 2, alive: true,
+                hitFlash: 0, attackCd: 0,
+            });
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  TARGET PRACTICE HELPERS
+    // ════════════════════════════════════════
+    function spawnTargets() {
+        targetDummies = [];
+        for (let i = 0; i < 6; i++) {
+            targetDummies.push({
+                x: 100 + Math.random() * 760, y: 80 + Math.random() * 380,
+                size: 14, alive: true, hitFlash: 0,
+                respawnTimer: 0, maxRespawn: 2,
+            });
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  UPDATE
+    // ════════════════════════════════════════
     function update(dt) {
         if (gameOver) return;
+
+        // ── Respawn ──
+        if (playerDead) {
+            respawnTimer -= dt;
+            if (respawnTimer <= 0) {
+                playerDead = false; player.alive = true;
+                player.hp = HP_MAX; player.mana = MANA_MAX;
+                player.x = 100 + Math.random() * 300; player.y = 100 + Math.random() * 340;
+                player.invulnTimer = 2;
+            }
+            // Still update passive things
+            updatePassive(dt);
+            return;
+        }
 
         // ── Player movement ──
         let mx = 0, my = 0;
@@ -177,41 +242,23 @@ const Battle = (() => {
         if (keys['a'] || keys['arrowleft']) mx -= 1;
         if (keys['d'] || keys['arrowright']) mx += 1;
 
-        // Dash
         if (player.dashing) {
             player.dashTimer -= dt;
-            const dashMul = 1 + player.dashChainCount * 0.15;
-            player.x += player.dashDirX * DASH_SPEED * dashMul * dt;
-            player.y += player.dashDirY * DASH_SPEED * dashMul * dt;
-            // Dash trail
-            if (Math.random() < 0.8) {
-                arenaParticles.push({
-                    x: player.x + (Math.random() - .5) * 10, y: player.y + (Math.random() - .5) * 10,
-                    vx: -player.dashDirX * 40 + (Math.random() - .5) * 20,
-                    vy: -player.dashDirY * 40 + (Math.random() - .5) * 20,
-                    life: 0.3, maxLife: 0.3, size: 3, color: '#4488ff',
-                });
-            }
+            const mul = 1 + player.dashChainCount * 0.15;
+            player.x += player.dashDirX * DASH_SPEED * mul * dt;
+            player.y += player.dashDirY * DASH_SPEED * mul * dt;
+            if (Math.random() < 0.8) arenaParticles.push({ x: player.x + (Math.random()-.5)*10, y: player.y + (Math.random()-.5)*10, vx: -player.dashDirX*40+(Math.random()-.5)*20, vy: -player.dashDirY*40+(Math.random()-.5)*20, life: .3, maxLife: .3, size: 3, color: '#4488ff' });
             if (player.dashTimer <= 0) {
-                player.dashing = false;
-                player.dashChainWindow = DASH_CHAIN_WINDOW;
-                // Dash burst
-                for (let p = 0; p < 12; p++) {
-                    arenaParticles.push({
-                        x: player.x + (Math.random() - .5) * 20, y: player.y + (Math.random() - .5) * 20,
-                        vx: (Math.random() - .5) * 80, vy: (Math.random() - .5) * 80,
-                        life: 0.4, maxLife: 0.4, size: 2 + Math.random() * 2, color: '#4488ff',
-                    });
-                }
+                player.dashing = false; player.dashChainWindow = DASH_CHAIN_WINDOW;
+                for (let p = 0; p < 12; p++) arenaParticles.push({ x: player.x+(Math.random()-.5)*20, y: player.y+(Math.random()-.5)*20, vx:(Math.random()-.5)*80, vy:(Math.random()-.5)*80, life:.4, maxLife:.4, size: 2+Math.random()*2, color:'#4488ff' });
             }
         } else if (mx !== 0 || my !== 0) {
-            const len = Math.sqrt(mx * mx + my * my);
-            player.x += (mx / len) * player.speed * dt;
-            player.y += (my / len) * player.speed * dt;
+            const len = Math.sqrt(mx*mx + my*my);
+            player.x += (mx/len) * player.speed * dt;
+            player.y += (my/len) * player.speed * dt;
         }
-        player.x = Math.max(20, Math.min(940, player.x));
-        player.y = Math.max(20, Math.min(520, player.y));
-
+        player.x = Math.max(20, Math.min(ARENA_W - 20, player.x));
+        player.y = Math.max(20, Math.min(ARENA_H - 20, player.y));
         if (player.dashCooldown > 0) player.dashCooldown -= dt;
         if (player.dashChainWindow > 0) player.dashChainWindow -= dt;
         if (player.invulnTimer > 0) player.invulnTimer -= dt;
@@ -222,22 +269,24 @@ const Battle = (() => {
         if (meleeTimer > 0) {
             meleeTimer -= dt;
             if (!meleeHit) {
-                for (const e of getEnemies()) {
-                    if (!e.alive) continue;
-                    const dx = e.x - player.x, dy = e.y - player.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < MELEE_RANGE) {
-                        const angle = Math.atan2(dy, dx);
-                        let diff = angle - meleeAngle;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        while (diff < -Math.PI) diff += Math.PI * 2;
-                        if (Math.abs(diff) < MELEE_ARC / 2 && e.invulnTimer <= 0 && !e.dashing) {
-                            meleeHit = true;
-                            e.hp -= MELEE_DAMAGE;
-                            e.hitFlash = 0.3;
-                            if (typeof Audio !== 'undefined') Audio.hit();
-                            Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
-                            break;
+                // Hit other players (PvP modes)
+                if (arenaMode !== 'boss' && arenaMode !== 'gauntlet' && arenaMode !== 'survival' && arenaMode !== 'target') {
+                    for (const e of getEnemies()) {
+                        if (!e.alive) continue;
+                        if (arenaMode === 'teams' && e.team === playerTeam) continue; // no friendly fire
+                        const dx = e.x - player.x, dy = e.y - player.y;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist < MELEE_RANGE) {
+                            const a = Math.atan2(dy, dx);
+                            let diff = a - meleeAngle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+                            if (Math.abs(diff) < MELEE_ARC/2 && e.invulnTimer <= 0 && !e.dashing) {
+                                meleeHit = true;
+                                e.hp -= MELEE_DAMAGE; e.hitFlash = 0.3;
+                                if (typeof Audio !== 'undefined') Audio.hit();
+                                if (e.hp <= 0) { onKill(e.id); }
+                                Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
+                                break;
+                            }
                         }
                     }
                 }
@@ -248,208 +297,127 @@ const Battle = (() => {
             if (enemyMelees[i].timer <= 0) enemyMelees.splice(i, 1);
         }
 
-        // ── Mana regen (only for non-locked mana) ──
-        const regenRate = player.burnout > 0 ? MANA_REGEN_BURNOUT : MANA_REGEN;
-        player.mana = Math.min(MANA_MAX, player.mana + regenRate * dt);
-
+        // ── Mana ──
+        const regen = player.burnout > 0 ? MANA_REGEN_BURNOUT : MANA_REGEN;
+        player.mana = Math.min(MANA_MAX, player.mana + regen * dt);
         if (player.burnout > 0) player.burnout -= dt;
         if (player.hitFlash > 0) player.hitFlash -= dt;
-        for (const e of getEnemies()) {
-            if (e.hitFlash > 0) e.hitFlash -= dt;
-            if (e.burnout > 0) e.burnout -= dt;
-        }
-
-        // ── Player spell cooldowns ──
+        for (const e of getEnemies()) { if (e.hitFlash > 0) e.hitFlash -= dt; if (e.burnout > 0) e.burnout -= dt; }
         for (const s of playerSpells) { if (s.currentCooldown > 0) s.currentCooldown -= dt; }
 
-        // ── Update casts ──
+        // ── Casts ──
         for (const c of playerCasts) ArconSystem.updateCast(c, dt);
         for (const c of enemyCasts) ArconSystem.updateCast(c, dt);
         playerCasts = playerCasts.filter(c => c.active);
         enemyCasts = enemyCasts.filter(c => c.active);
 
-        // ── Update arcons ──
+        // ── Arcon collision ──
         ArconSystem.updateArcons(dt, [player, ...getEnemies()]);
 
-        // ── Arena Boss Update ──
-        updateArenaBosses(dt);
+        // Check arcon hits on enemies (for scoring)
+        const arcons = ArconSystem.getArcons();
+        for (const e of getEnemies()) {
+            if (!e.alive) continue;
+            if (arenaMode === 'teams' && e.team === playerTeam) continue;
+            if (e.hp <= 0 && e.alive) { e.alive = false; onKill(e.id); }
+        }
 
-        // ── Ambient particles ──
-        if (Math.random() < 0.3) {
-            arenaParticles.push({ x:Math.random()*960, y:550, vx:0, vy:-10-Math.random()*20, life:2+Math.random()*3, maxLife:5, size:1+Math.random(), color:'#ffd700' });
-        }
-        for (let i = arenaParticles.length - 1; i >= 0; i--) {
-            const p = arenaParticles[i];
-            p.x += (p.vx || 0) * dt; p.y += p.vy * dt; p.life -= dt;
-            if (p.life <= 0) arenaParticles.splice(i, 1);
-        }
+        // ── Mode-specific updates ──
+        if (arenaMode === 'boss' || arenaMode === 'gauntlet') updateArenaBosses(dt);
+        if (arenaMode === 'survival') updateSurvival(dt);
+        if (arenaMode === 'target') updateTargetPractice(dt);
+        if (arenaMode === 'koth') updateKOTH(dt);
+
+        updatePassive(dt);
 
         // ── Network sync ──
         syncTimer -= dt;
         if (syncTimer <= 0 && Network.isConnected()) {
             syncTimer = SYNC_RATE;
-            Network.send({
-                type: 'state',
-                x: player.x, y: player.y,
-                hp: player.hp, mana: player.mana,
-                dashing: player.dashing,
-            });
+            Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing, score: playerScore });
         }
 
-        // ── HUD ──
         updateHUD();
 
-        // ── Win condition ──
-        if (player.hp <= 0 && !gameOver) {
-            gameOver = true; winner = 'enemy'; showVictory();
-            Network.send({ type: 'gameover', winner: 'player' });
-        } else if (!gameOver) {
-            const allDead = getEnemies().length > 0 && getEnemies().every(e => e.hp <= 0);
-            if (allDead) {
-                gameOver = true; winner = 'player'; showVictory();
-                Network.send({ type: 'gameover', winner: 'enemy' });
-            }
+        // ── Win conditions ──
+        checkWinCondition();
+    }
+
+    function updatePassive(dt) {
+        // Ambient particles
+        if (Math.random() < 0.3) arenaParticles.push({ x: Math.random()*ARENA_W, y: ARENA_H + 10, vx: 0, vy: -10-Math.random()*20, life: 2+Math.random()*3, maxLife: 5, size: 1+Math.random(), color:'#ffd700' });
+        for (let i = arenaParticles.length - 1; i >= 0; i--) {
+            const p = arenaParticles[i];
+            p.x += (p.vx||0)*0.016; p.y += p.vy*0.016; p.life -= 0.016;
+            if (p.life <= 0) arenaParticles.splice(i, 1);
         }
     }
 
+    // ════════════════════════════════════════
+    //  ARENA BOSSES
+    // ════════════════════════════════════════
     function updateArenaBosses(dt) {
-        if (arenaBosses.length === 0) return;
-
         const arcons = ArconSystem.getArcons();
+        const allPlayers = [player, ...getEnemies().filter(e => e.alive)];
 
         for (let bi = arenaBosses.length - 1; bi >= 0; bi--) {
-            const boss = arenaBosses[bi];
-            if (!boss.alive) continue;
-
+            const boss = arenaBosses[bi]; if (!boss.alive) continue;
             if (boss.spawnTimer > 0) { boss.spawnTimer -= dt; continue; }
             if (boss.hitFlash > 0) boss.hitFlash -= dt;
             boss.attackCd -= dt;
 
-            // Simple boss AI: chase player
-            const dx = player.x - boss.x, dy = player.y - boss.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            boss.facing = dx > 0 ? 1 : -1;
-
-            // Animation
-            boss.animTimer += dt;
-            if (boss.animTimer > 0.25) {
-                boss.animTimer = 0;
-                boss.animFrame = (boss.animFrame + 1) % 4;
+            // Chase nearest player
+            let closest = null, closeDist = Infinity;
+            for (const p of allPlayers) {
+                const d = Math.sqrt((p.x - boss.x)**2 + (p.y - boss.y)**2);
+                if (d < closeDist) { closeDist = d; closest = p; }
             }
+            if (closest) {
+                const dx = closest.x - boss.x, dy = closest.y - boss.y;
+                const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                boss.facing = dx > 0 ? 1 : -1;
+                if (dist > 60) { boss.x += (dx/dist) * boss.speed * dt; boss.y += (dy/dist) * boss.speed * dt; }
 
-            if (dist > 60) {
-                // Move toward player
-                const spd = boss.speed * dt;
-                boss.x += (dx / dist) * spd;
-                boss.y += (dy / dist) * spd;
-                boss.animState = 'walk';
-            } else {
-                boss.animState = 'idle';
-            }
-
-            // Contact damage
-            if (dist < 30 && boss.attackCd <= 0 && player.invulnTimer <= 0) {
-                player.hp -= boss.dmg;
-                player.hitFlash = 0.2;
-                boss.attackCd = 1.5;
-                boss.animState = 'attack';
-                if (typeof Audio !== 'undefined') Audio.hit();
-            }
-
-            // Boss phase transition
-            const hpPct = boss.hp / boss.maxHp;
-            if (hpPct < 0.5 && boss.phase < boss.phaseMax) {
-                boss.phase++;
-                boss.speed *= 1.3;
-            }
-
-            // Clamp to arena
-            boss.x = Math.max(20, Math.min(940, boss.x));
-            boss.y = Math.max(20, Math.min(520, boss.y));
-
-            // Check arcon hits on boss
-            for (let i = arcons.length - 1; i >= 0; i--) {
-                const a = arcons[i];
-                if (!a.alive) continue;
-                const adx = a.x - boss.x, ady = a.y - boss.y;
-                const hitDist = a.width / 2 + boss.size / 2;
-                if (adx * adx + ady * ady < hitDist * hitDist) {
-                    a.alive = false;
-                    boss.hp -= 1;
-                    boss.hitFlash = 0.1;
-                    if (typeof Audio !== 'undefined') Audio.enemyHit();
-                    if (boss.hp <= 0) {
-                        boss.alive = false;
-                        // Death particles
-                        for (let j = 0; j < 15; j++) {
-                            arenaParticles.push({
-                                x: boss.x, y: boss.y,
-                                vx: (Math.random() - 0.5) * 120,
-                                vy: (Math.random() - 0.5) * 120,
-                                life: 0.6, maxLife: 0.6,
-                                size: 3 + Math.random() * 3,
-                                color: boss.color,
-                            });
-                        }
-                        // Gauntlet: spawn next boss
-                        if (arenaRoomType === 'gauntlet') {
-                            gauntletIndex++;
-                            if (gauntletIndex < gauntletBossOrder.length) {
-                                setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
-                            } else {
-                                // All bosses defeated
-                                gameOver = true;
-                                winner = 'player';
-                                showVictory();
-                            }
-                        } else {
-                            // Single boss defeated
-                            gameOver = true;
-                            winner = 'player';
-                            showVictory();
-                        }
+                // Contact damage
+                if (dist < 30 && boss.attackCd <= 0) {
+                    if (closest === player && player.invulnTimer <= 0 && !player.dashing) {
+                        player.hp -= boss.dmg; player.hitFlash = 0.2; boss.attackCd = 1.5;
+                        if (typeof Audio !== 'undefined') Audio.hit();
+                        if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                    } else if (closest !== player) {
+                        // Network: send boss-hit to that peer
+                        Network.send({ type: 'boss-hit', dmg: boss.dmg }, closest.id);
                     }
-                    break;
+                }
+            }
+            boss.x = Math.max(20, Math.min(ARENA_W-20, boss.x));
+            boss.y = Math.max(20, Math.min(ARENA_H-20, boss.y));
+
+            // Phase
+            if (boss.hp / boss.maxHp < 0.5 && boss.phase < boss.phaseMax) { boss.phase++; boss.speed *= 1.3; }
+
+            // Arcon hits
+            for (let i = arcons.length - 1; i >= 0; i--) {
+                const a = arcons[i]; if (!a.alive) continue;
+                const dx = a.x - boss.x, dy = a.y - boss.y;
+                if (dx*dx + dy*dy < ((a.width/2 + boss.size/2) ** 2)) {
+                    a.alive = false; boss.hp -= 1; boss.hitFlash = 0.1;
+                    if (typeof Audio !== 'undefined') Audio.enemyHit();
+                    if (boss.hp <= 0) { killBoss(boss, bi); break; }
                 }
             }
 
-            // Melee hit on boss
+            // Melee hits
             if (meleeTimer > 0 && !boss._meleeHitThisSwing) {
-                const mdx = boss.x - player.x, mdy = boss.y - player.y;
-                const mDist = Math.sqrt(mdx * mdx + mdy * mdy);
-                if (mDist < MELEE_RANGE) {
-                    const mAngle = Math.atan2(mdy, mdx);
-                    let diff = mAngle - meleeAngle;
-                    while (diff > Math.PI) diff -= Math.PI * 2;
-                    while (diff < -Math.PI) diff += Math.PI * 2;
-                    if (Math.abs(diff) < MELEE_ARC / 2) {
-                        boss._meleeHitThisSwing = true;
-                        boss.hp -= MELEE_DAMAGE;
-                        boss.hitFlash = 0.15;
+                const dx = boss.x - player.x, dy = boss.y - player.y;
+                const d = Math.sqrt(dx*dx + dy*dy);
+                if (d < MELEE_RANGE) {
+                    const a = Math.atan2(dy, dx);
+                    let diff = a - meleeAngle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+                    if (Math.abs(diff) < MELEE_ARC/2) {
+                        boss._meleeHitThisSwing = true; boss.hp -= MELEE_DAMAGE; boss.hitFlash = 0.15;
                         if (typeof Audio !== 'undefined') Audio.enemyHit();
-                        if (boss.hp <= 0) {
-                            boss.alive = false;
-                            for (let j = 0; j < 15; j++) {
-                                arenaParticles.push({
-                                    x: boss.x, y: boss.y,
-                                    vx: (Math.random() - 0.5) * 120,
-                                    vy: (Math.random() - 0.5) * 120,
-                                    life: 0.6, maxLife: 0.6,
-                                    size: 3 + Math.random() * 3,
-                                    color: boss.color,
-                                });
-                            }
-                            if (arenaRoomType === 'gauntlet') {
-                                gauntletIndex++;
-                                if (gauntletIndex < gauntletBossOrder.length) {
-                                    setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
-                                } else {
-                                    gameOver = true; winner = 'player'; showVictory();
-                                }
-                            } else {
-                                gameOver = true; winner = 'player'; showVictory();
-                            }
-                        }
+                        if (boss.hp <= 0) killBoss(boss, bi);
                     }
                 }
             }
@@ -457,574 +425,595 @@ const Battle = (() => {
         }
     }
 
-    function castPlayerSpell(index) {
+    function killBoss(boss, bi) {
+        boss.alive = false;
+        for (let j = 0; j < 15; j++) arenaParticles.push({ x:boss.x, y:boss.y, vx:(Math.random()-.5)*120, vy:(Math.random()-.5)*120, life:.6, maxLife:.6, size:3+Math.random()*3, color:boss.color });
+        if (arenaMode === 'gauntlet') {
+            gauntletIndex++;
+            if (gauntletIndex < gauntletBossOrder.length) {
+                setTimeout(() => spawnArenaBoss(gauntletBossOrder[gauntletIndex]), 2000);
+            } else { gameOver = true; winner = 'player'; showVictory(); }
+        } else { gameOver = true; winner = 'player'; showVictory(); }
+    }
+
+    // ════════════════════════════════════════
+    //  SURVIVAL
+    // ════════════════════════════════════════
+    function updateSurvival(dt) {
+        const arcons = ArconSystem.getArcons();
+        const allPlayers = [player, ...getEnemies().filter(e => e.alive)];
+
+        for (let i = survivalEnemies.length - 1; i >= 0; i--) {
+            const mob = survivalEnemies[i]; if (!mob.alive) continue;
+            if (mob.hitFlash > 0) mob.hitFlash -= dt;
+            mob.attackCd -= dt;
+
+            // Chase nearest player
+            let tgt = player, td = Infinity;
+            for (const p of allPlayers) {
+                const d = (p.x - mob.x)**2 + (p.y - mob.y)**2;
+                if (d < td) { td = d; tgt = p; }
+            }
+            const dx = tgt.x - mob.x, dy = tgt.y - mob.y;
+            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+            mob.x += (dx/dist) * mob.speed * dt;
+            mob.y += (dy/dist) * mob.speed * dt;
+            mob.x = Math.max(10, Math.min(ARENA_W-10, mob.x));
+            mob.y = Math.max(10, Math.min(ARENA_H-10, mob.y));
+
+            // Contact damage player
+            if (dist < 20 && mob.attackCd <= 0) {
+                if (tgt === player && player.invulnTimer <= 0 && !player.dashing) {
+                    player.hp -= mob.dmg; player.hitFlash = 0.2; mob.attackCd = 1;
+                    if (typeof Audio !== 'undefined') Audio.hit();
+                    if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                }
+            }
+
+            // Arcon hits
+            for (let j = arcons.length - 1; j >= 0; j--) {
+                const a = arcons[j]; if (!a.alive) continue;
+                const adx = a.x - mob.x, ady = a.y - mob.y;
+                if (adx*adx + ady*ady < ((a.width/2 + mob.size/2)**2)) {
+                    a.alive = false; mob.hp -= 1; mob.hitFlash = 0.1;
+                    if (mob.hp <= 0) {
+                        mob.alive = false; survivalScore++;
+                        for (let k = 0; k < 6; k++) arenaParticles.push({ x:mob.x, y:mob.y, vx:(Math.random()-.5)*80, vy:(Math.random()-.5)*80, life:.3, maxLife:.3, size:2, color:mob.color });
+                    }
+                    break;
+                }
+            }
+
+            // Melee hits
+            if (meleeTimer > 0 && !mob._meleeHit) {
+                const mdx = mob.x - player.x, mdy = mob.y - player.y;
+                const md = Math.sqrt(mdx*mdx + mdy*mdy);
+                if (md < MELEE_RANGE) {
+                    const ma = Math.atan2(mdy, mdx);
+                    let diff = ma - meleeAngle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+                    if (Math.abs(diff) < MELEE_ARC/2) {
+                        mob._meleeHit = true; mob.hp -= MELEE_DAMAGE; mob.hitFlash = 0.15;
+                        if (mob.hp <= 0) {
+                            mob.alive = false; survivalScore++;
+                            for (let k = 0; k < 6; k++) arenaParticles.push({ x:mob.x, y:mob.y, vx:(Math.random()-.5)*80, vy:(Math.random()-.5)*80, life:.3, maxLife:.3, size:2, color:mob.color });
+                        }
+                    }
+                }
+            }
+            if (meleeTimer <= 0 && mob._meleeHit) mob._meleeHit = false;
+        }
+
+        survivalEnemies = survivalEnemies.filter(e => e.alive);
+        if (survivalEnemies.length === 0) {
+            survivalSpawnTimer -= dt;
+            if (survivalSpawnTimer <= 0) { spawnSurvivalWave(); survivalSpawnTimer = 2; }
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  TARGET PRACTICE
+    // ════════════════════════════════════════
+    function updateTargetPractice(dt) {
+        targetTimer -= dt;
+        if (targetTimer <= 0) {
+            gameOver = true; winner = 'player';
+            showVictory('TIME UP — Hits: ' + targetHits);
+            return;
+        }
+
+        const arcons = ArconSystem.getArcons();
+        for (const t of targetDummies) {
+            if (t.hitFlash > 0) t.hitFlash -= dt;
+            if (!t.alive) {
+                t.respawnTimer -= dt;
+                if (t.respawnTimer <= 0) {
+                    t.alive = true; t.x = 60 + Math.random() * 840; t.y = 60 + Math.random() * 420;
+                }
+                continue;
+            }
+            for (let i = arcons.length - 1; i >= 0; i--) {
+                const a = arcons[i]; if (!a.alive) continue;
+                const dx = a.x - t.x, dy = a.y - t.y;
+                if (dx*dx + dy*dy < ((a.width/2 + t.size/2)**2)) {
+                    a.alive = false; t.hitFlash = 0.15; t.alive = false;
+                    t.respawnTimer = t.maxRespawn; targetHits++;
+                    for (let k = 0; k < 5; k++) arenaParticles.push({ x:t.x, y:t.y, vx:(Math.random()-.5)*60, vy:(Math.random()-.5)*60, life:.2, maxLife:.2, size:2, color:'#ffd700' });
+                    break;
+                }
+            }
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  KING OF THE HILL
+    // ════════════════════════════════════════
+    function updateKOTH(dt) {
+        // Check who's in the zone
+        const inZone = [];
+        const pdx = player.x - kothZone.x, pdy = player.y - kothZone.y;
+        if (pdx*pdx + pdy*pdy < kothZone.r * kothZone.r && player.alive) inZone.push('player');
+        for (const e of getEnemies()) {
+            if (!e.alive) continue;
+            const dx = e.x - kothZone.x, dy = e.y - kothZone.y;
+            if (dx*dx + dy*dy < kothZone.r * kothZone.r) inZone.push(e.id);
+        }
+
+        if (inZone.length === 1) {
+            const holder = inZone[0];
+            if (kothHolder !== holder) { kothHolder = holder; }
+            kothTimer += dt;
+            if (kothTimer >= KOTH_WIN) {
+                gameOver = true;
+                winner = kothHolder === 'player' ? 'player' : 'enemy';
+                showVictory();
+            }
+        } else if (inZone.length === 0) {
+            // Nobody → timer slowly decays
+            kothTimer = Math.max(0, kothTimer - dt * 0.5);
+        }
+        // Contested (2+) → timer frozen
+    }
+
+    // ════════════════════════════════════════
+    //  SCORING / KILLS
+    // ════════════════════════════════════════
+    function onKill(victimId) {
+        playerScore++;
+        if (arenaMode === 'teams') {
+            teamScores[playerTeam]++;
+        }
+        // Victim respawns after RESPAWN_TIME (handled via network)
+        Network.send({ type: 'kill', victim: victimId, killer: 'player' });
+    }
+
+    function checkWinCondition() {
         if (gameOver) return;
+
+        switch (arenaMode) {
+            case 'ffa': {
+                // First to 10 kills, or last standing if no respawn
+                if (playerScore >= 10) { gameOver = true; winner = 'player'; showVictory(); }
+                for (const [pid, s] of Object.entries(scores)) {
+                    if (s >= 10) { gameOver = true; winner = 'enemy'; showVictory(); break; }
+                }
+                break;
+            }
+            case 'duel': {
+                // First to 5
+                if (playerScore >= 5) { gameOver = true; winner = 'player'; showVictory(); }
+                for (const [pid, s] of Object.entries(scores)) {
+                    if (s >= 5) { gameOver = true; winner = 'enemy'; showVictory(); break; }
+                }
+                break;
+            }
+            case 'teams': {
+                if (teamScores[playerTeam] >= 15) { gameOver = true; winner = 'player'; showVictory(); }
+                const otherTeam = 1 - playerTeam;
+                if (teamScores[otherTeam] >= 15) { gameOver = true; winner = 'enemy'; showVictory(); }
+                break;
+            }
+            case 'survival': {
+                // Ends when player dies (no respawn in survival)
+                if (player.hp <= 0) {
+                    gameOver = true; winner = 'enemy';
+                    showVictory('Waves: ' + survivalWave + ' | Kills: ' + survivalScore);
+                }
+                break;
+            }
+            // boss, gauntlet, koth, target — handled in their update functions
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  CASTING
+    // ════════════════════════════════════════
+    function castPlayerSpell(index) {
+        if (gameOver || playerDead) return;
         if (index < 0 || index >= playerSpells.length) return;
         const spell = playerSpells[index];
         if (spell.currentCooldown > 0) return;
-
         if (player.mana < spell.cost) {
             if (player.mana <= 0) { player.hp = Math.max(0, player.hp - BACKLASH_DAMAGE); player.hitFlash = 0.3; }
             return;
         }
-
         if (spell.cost > player.mana * BURNOUT_THRESHOLD) player.burnout = 3;
-
         player.mana -= spell.cost;
-        spell.currentCooldown = spell.cooldown;
+        spell.currentCooldown = 0; // no cooldown, mana-gated only
 
         const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
         const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y, {
             hp: player.hp, maxHp: HP_MAX, mana: player.mana, maxMana: MANA_MAX,
-            speed: player.speed, level: 1, combo: 0, kills: 0, floor: 0,
+            speed: player.speed, level: 1, combo: 0, kills: playerScore, floor: 0,
         });
         playerCasts.push(cast);
         if (typeof Audio !== 'undefined') Audio.cast();
 
-        // Send cast to opponent
-        Network.send({
-            type: 'cast',
-            spellIndex: index,
-            casterX: player.x, casterY: player.y,
-            cursorX: mouse.x, cursorY: mouse.y,
-            cost: spell.cost,
-        });
+        if (spell.xExpr && spell.yExpr) {
+            Network.send({ type: 'castfull', cost: spell.cost, casterX: player.x, casterY: player.y, cursorX: mouse.x, cursorY: mouse.y, xExpr: spell.xExpr, yExpr: spell.yExpr, emitExpr: spell.emitExpr || 'i*0.02', widthExpr: spell.widthExpr || '4' });
+        } else {
+            Network.send({ type: 'cast', spellIndex: index, casterX: player.x, casterY: player.y, cursorX: mouse.x, cursorY: mouse.y, cost: spell.cost });
+        }
     }
 
     function doDash() {
-        if (player.dashing) return;
-
+        if (playerDead || player.dashing) return;
         const isChain = player.dashChainWindow > 0 && player.dashChainCount > 0;
         if (!isChain && player.dashCooldown > 0) return;
-
         let dx = 0, dy = 0;
         if (keys['w'] || keys['arrowup']) dy -= 1;
         if (keys['s'] || keys['arrowdown']) dy += 1;
         if (keys['a'] || keys['arrowleft']) dx -= 1;
         if (keys['d'] || keys['arrowright']) dx += 1;
-        if (dx === 0 && dy === 0) {
-            // Dash toward cursor
-            dx = mouse.x - player.x; dy = mouse.y - player.y;
-        }
-        const len = Math.sqrt(dx * dx + dy * dy);
-        if (len === 0) return;
-        player.dashDirX = dx / len;
-        player.dashDirY = dy / len;
-        player.dashing = true;
-        player.dashTimer = DASH_DURATION;
-        player.invulnTimer = DASH_INVULN;
-
-        if (isChain) {
-            player.dashChainCount++;
-            player.dashCooldown = Math.max(0.15, DASH_COOLDOWN - player.dashChainCount * 0.1);
-        } else {
-            player.dashChainCount = 1;
-            player.dashCooldown = DASH_COOLDOWN;
-        }
-
+        if (dx === 0 && dy === 0) { dx = mouse.x - player.x; dy = mouse.y - player.y; }
+        const len = Math.sqrt(dx*dx + dy*dy); if (len === 0) return;
+        player.dashDirX = dx/len; player.dashDirY = dy/len;
+        player.dashing = true; player.dashTimer = DASH_DURATION; player.invulnTimer = DASH_INVULN;
+        if (isChain) { player.dashChainCount++; player.dashCooldown = Math.max(.15, DASH_COOLDOWN - player.dashChainCount*.1); }
+        else { player.dashChainCount = 1; player.dashCooldown = DASH_COOLDOWN; }
         if (typeof Audio !== 'undefined') Audio.dash();
-
         Network.send({ type: 'dash', dirX: player.dashDirX, dirY: player.dashDirY, chain: player.dashChainCount });
     }
 
-    // Handle messages from opponents
+    function doMelee(mx, my) {
+        if (gameOver || playerDead || meleeTimer > 0 || meleeCooldown > 0) return;
+        meleeAngle = Math.atan2(my - player.y, mx - player.x);
+        meleeTimer = MELEE_DURATION; meleeCooldown = MELEE_COOLDOWN; meleeHit = false;
+        if (typeof Audio !== 'undefined') Audio.melee();
+        for (let i = 0; i < 6; i++) {
+            const a = meleeAngle - MELEE_ARC/2 + (MELEE_ARC/6)*i;
+            arenaParticles.push({ x: player.x+Math.cos(a)*MELEE_RANGE*.3, y: player.y+Math.sin(a)*MELEE_RANGE*.3, vx: Math.cos(a)*80, vy: Math.sin(a)*80, life:.2, maxLife:.2, size: 2+Math.random()*2, color:'#fff' });
+        }
+        Network.send({ type: 'melee', x: player.x, y: player.y, angle: meleeAngle });
+    }
+
+    // ════════════════════════════════════════
+    //  NETWORK MESSAGES
+    // ════════════════════════════════════════
     function handleNetMessage(data, fromPeerId) {
         if (!data || !data.type) return;
         const pid = fromPeerId || 'enemy';
 
-        // Auto-create enemy on first message
+        // Auto-create enemy on first state message
         if (!enemies[pid] && data.type === 'state') {
             const idx = Object.keys(enemies).length;
-            const spawnX = 300 + idx * 200;
-            enemies[pid] = makeEnemy(pid, data.x || spawnX, data.y || 270, idx);
-            ArconSystem.onManaReturn(pid, (count) => {
-                if (enemies[pid]) enemies[pid].mana = Math.min(MANA_MAX, enemies[pid].mana + count);
-            });
+            enemies[pid] = makeEnemy(pid, data.x || 480, data.y || 270, idx);
+            ArconSystem.onManaReturn(pid, (n) => { if (enemies[pid]) enemies[pid].mana = Math.min(MANA_MAX, enemies[pid].mana + n); });
+            // Auto-assign team
+            if (arenaMode === 'teams') {
+                const team = idx % 2 === 0 ? 1 : 0;
+                enemies[pid].team = team;
+                teamAssignments[pid] = team;
+                enemies[pid].color = TEAM_COLORS[team][0];
+                enemies[pid].colorLight = TEAM_COLORS[team][1];
+            }
         }
 
         const enemy = enemies[pid];
 
         switch (data.type) {
             case 'state':
-                if (enemy) {
-                    enemy.x = data.x; enemy.y = data.y;
-                    enemy.hp = data.hp; enemy.mana = data.mana;
-                    enemy.dashing = data.dashing;
-                }
+                if (enemy) { enemy.x = data.x; enemy.y = data.y; enemy.hp = data.hp; enemy.mana = data.mana; enemy.dashing = data.dashing; enemy.score = data.score || 0; scores[pid] = data.score || 0; }
                 break;
-
             case 'cast':
                 try {
                     const aim = Math.atan2(data.cursorY - data.casterY, data.cursorX - data.casterX);
                     const cx = data.casterX, cy = data.casterY;
-                    const enemySpell = {
-                        cost: data.cost,
-                        xFn: (v) => cx + Math.cos(aim) * 300 * (v.t - v.i * 0.02),
-                        yFn: (v) => cy + Math.sin(aim) * 300 * (v.t - v.i * 0.02),
-                        emitDelayFn: (v) => v.i * 0.02,
-                        widthFn: (v) => 4,
-                    };
-                    const cast = ArconSystem.castSpell(enemySpell,
-                        { id: pid, x: data.casterX, y: data.casterY },
-                        player, data.cursorX, data.cursorY
-                    );
-                    enemyCasts.push(cast);
+                    const s = { cost: data.cost, xFn: (v) => cx + Math.cos(aim)*300*(v.t - v.i*.02), yFn: (v) => cy + Math.sin(aim)*300*(v.t - v.i*.02), emitDelayFn: (v) => v.i*.02, widthFn: () => 4 };
+                    enemyCasts.push(ArconSystem.castSpell(s, { id: pid, x: data.casterX, y: data.casterY }, player, data.cursorX, data.cursorY));
                 } catch(e) {}
                 break;
-
             case 'castfull':
                 try {
-                    const s = {
-                        cost: data.cost,
-                        xFn: Parser.compile(data.xExpr),
-                        yFn: Parser.compile(data.yExpr),
-                        emitDelayFn: Parser.compile(data.emitExpr),
-                        widthFn: Parser.compile(data.widthExpr),
-                    };
-                    const cast = ArconSystem.castSpell(s,
-                        { id: pid, x: data.casterX, y: data.casterY },
-                        player, data.cursorX, data.cursorY
-                    );
-                    enemyCasts.push(cast);
+                    const s = { cost: data.cost, xFn: Parser.compile(data.xExpr), yFn: Parser.compile(data.yExpr), emitDelayFn: Parser.compile(data.emitExpr), widthFn: Parser.compile(data.widthExpr) };
+                    enemyCasts.push(ArconSystem.castSpell(s, { id: pid, x: data.casterX, y: data.casterY }, player, data.cursorX, data.cursorY));
                 } catch(e) {}
                 break;
-
             case 'dash':
-                if (enemy) {
-                    enemy.dashing = true;
-                    enemy.dashDirX = data.dirX;
-                    enemy.dashDirY = data.dirY;
-                    enemy.dashTimer = DASH_DURATION;
-                    const dashEnemy = enemy;
-                    setTimeout(() => { dashEnemy.dashing = false; }, DASH_DURATION * 1000);
-                }
+                if (enemy) { enemy.dashing = true; enemy.dashDirX = data.dirX; enemy.dashDirY = data.dirY; enemy.dashTimer = DASH_DURATION; const de = enemy; setTimeout(() => { de.dashing = false; }, DASH_DURATION*1000); }
                 break;
-
             case 'melee':
-                // Show enemy melee visual
                 enemyMelees.push({ x: data.x, y: data.y, angle: data.angle, timer: MELEE_DURATION, peerId: pid });
-                // Damage check — if we're in their cone
-                if (!player.dashing && player.invulnTimer <= 0) {
+                if (!player.dashing && player.invulnTimer <= 0 && player.alive) {
+                    if (arenaMode === 'teams' && teamAssignments[pid] === playerTeam) break; // no friendly fire
                     const dx = player.x - data.x, dy = player.y - data.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const dist = Math.sqrt(dx*dx + dy*dy);
                     if (dist < MELEE_RANGE) {
-                        const angle = Math.atan2(dy, dx);
-                        let diff = angle - data.angle;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        while (diff < -Math.PI) diff += Math.PI * 2;
-                        if (Math.abs(diff) < MELEE_ARC / 2) {
-                            player.hp -= MELEE_DAMAGE;
-                            player.hitFlash = 0.3;
+                        const a = Math.atan2(dy, dx);
+                        let diff = a - data.angle; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+                        if (Math.abs(diff) < MELEE_ARC/2) {
+                            player.hp -= MELEE_DAMAGE; player.hitFlash = 0.3;
                             if (typeof Audio !== 'undefined') Audio.playerHurt();
+                            if (player.hp <= 0 && player.alive) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
                         }
                     }
                 }
                 break;
-
+            case 'kill':
+                if (data.killer !== 'player') { scores[pid] = (scores[pid] || 0) + 1; }
+                if (data.victim === 'player') { /* we were killed, handled by melee/arcon */ }
+                break;
+            case 'boss-hit':
+                if (player.invulnTimer <= 0 && !player.dashing) {
+                    player.hp -= data.dmg; player.hitFlash = 0.2;
+                    if (player.hp <= 0) { playerDead = true; player.alive = false; respawnTimer = RESPAWN_TIME; }
+                }
+                break;
             case 'peer-join':
-                // New peer joined mid-game
                 if (!enemies[data.peerId]) {
                     const idx = Object.keys(enemies).length;
                     enemies[data.peerId] = makeEnemy(data.peerId, 480, 270, idx);
-                    ArconSystem.onManaReturn(data.peerId, (count) => {
-                        if (enemies[data.peerId]) enemies[data.peerId].mana = Math.min(MANA_MAX, enemies[data.peerId].mana + count);
-                    });
+                    ArconSystem.onManaReturn(data.peerId, (n) => { if (enemies[data.peerId]) enemies[data.peerId].mana = Math.min(MANA_MAX, enemies[data.peerId].mana + n); });
                 }
                 break;
-
             case 'peer-leave':
-                delete enemies[data.peerId];
+                delete enemies[data.peerId]; delete scores[data.peerId];
                 break;
-
             case 'gameover':
                 if (!gameOver) { gameOver = true; winner = data.winner; showVictory(); }
                 break;
         }
     }
 
-    // Enhanced cast that sends full expressions
-    function castPlayerSpellFull(index) {
-        if (gameOver) return;
-        if (index < 0 || index >= playerSpells.length) return;
-        const spell = playerSpells[index];
-        if (spell.currentCooldown > 0) return;
-        if (player.mana < spell.cost) {
-            if (player.mana <= 0) { player.hp = Math.max(0, player.hp - BACKLASH_DAMAGE); player.hitFlash = 0.3; }
-            return;
-        }
-        if (spell.cost > player.mana * BURNOUT_THRESHOLD) player.burnout = 3;
-        player.mana -= spell.cost;
-        spell.currentCooldown = spell.cooldown;
-
-        const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
-        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y, {
-            hp: player.hp, maxHp: HP_MAX, mana: player.mana, maxMana: MANA_MAX,
-            speed: player.speed, level: 1, combo: 0, kills: 0, floor: 0,
-        });
-        playerCasts.push(cast);
-        if (typeof Audio !== 'undefined') Audio.cast();
-
-        // Send full formula if available
-        if (spell.xExpr && spell.yExpr) {
-            Network.send({
-                type: 'castfull',
-                cost: spell.cost,
-                casterX: player.x, casterY: player.y,
-                cursorX: mouse.x, cursorY: mouse.y,
-                xExpr: spell.xExpr, yExpr: spell.yExpr,
-                emitExpr: spell.emitExpr || 'i*0.02',
-                widthExpr: spell.widthExpr || '4',
-            });
-        } else {
-            Network.send({
-                type: 'cast',
-                spellIndex: index,
-                casterX: player.x, casterY: player.y,
-                cursorX: mouse.x, cursorY: mouse.y,
-                cost: spell.cost,
-            });
-        }
-    }
-
+    // ════════════════════════════════════════
+    //  HUD
+    // ════════════════════════════════════════
     function updateHUD() {
-        document.getElementById('player-hp').style.width = `${(player.hp/HP_MAX)*100}%`;
-        document.getElementById('player-hp-text').textContent = Math.ceil(player.hp);
-        document.getElementById('player-mana').style.width = `${(player.mana/MANA_MAX)*100}%`;
+        document.getElementById('player-hp').style.width = (player.hp/HP_MAX*100) + '%';
+        document.getElementById('player-hp-text').textContent = Math.max(0, Math.ceil(player.hp));
+        document.getElementById('player-mana').style.width = (player.mana/MANA_MAX*100) + '%';
         document.getElementById('player-mana-text').textContent = Math.ceil(player.mana);
-
         const pLocked = ArconSystem.countActive('player') + ArconSystem.countPending(playerCasts, 'player');
-        document.getElementById('player-mana-locked').style.width = `${(pLocked/MANA_MAX)*100}%`;
-
-        // Show first enemy stats in the standard enemy bar (or average if multiple)
-        const eArr = getEnemies();
-        if (eArr.length > 0) {
-            const e0 = eArr[0];
-            document.getElementById('enemy-hp').style.width = `${(e0.hp/HP_MAX)*100}%`;
-            document.getElementById('enemy-hp-text').textContent = eArr.length > 1 ? `${Math.ceil(e0.hp)} (+${eArr.length - 1})` : Math.ceil(e0.hp);
-            document.getElementById('enemy-mana').style.width = `${(e0.mana/MANA_MAX)*100}%`;
-            const eLocked = ArconSystem.countActive(e0.id) + ArconSystem.countPending(enemyCasts, e0.id);
-            document.getElementById('enemy-mana-locked').style.width = `${(eLocked/MANA_MAX)*100}%`;
-        }
+        document.getElementById('player-mana-locked').style.width = (pLocked/MANA_MAX*100) + '%';
 
         for (let i = 0; i < playerSpells.length; i++) {
-            const el = document.getElementById(`spell-hud-${i}`);
-            if (!el) continue;
+            const el = document.getElementById('spell-hud-' + i); if (!el) continue;
             el.className = 'spell-key-hud';
             if (playerSpells[i].currentCooldown > 0) el.classList.add('on-cd');
             else if (player.mana < playerSpells[i].cost) el.classList.add('no-mana');
         }
 
         const dashEl = document.getElementById('dash-cd');
-        if (player.dashCooldown > 0 && !player.dashing) {
-            dashEl.textContent = `DASH ${player.dashCooldown.toFixed(1)}s`;
-            dashEl.className = 'dash-cd';
-        } else {
-            const chainText = player.dashChainWindow > 0 ? ` [CHAIN x${player.dashChainCount}]` : '';
-            dashEl.textContent = `DASH [SHIFT]${chainText}`;
-            dashEl.className = 'dash-cd ready';
+        if (player.dashCooldown > 0 && !player.dashing) { dashEl.textContent = 'DASH ' + player.dashCooldown.toFixed(1) + 's'; dashEl.className = 'dash-cd'; }
+        else { const ct = player.dashChainWindow > 0 ? ' [CHAIN x' + player.dashChainCount + ']' : ''; dashEl.textContent = 'DASH [SHIFT]' + ct; dashEl.className = 'dash-cd ready'; }
+
+        // Scoreboard
+        const sb = document.getElementById('pvp-scoreboard');
+        if (sb) {
+            let lines = '<span style="color:#4488ff">You: ' + playerScore + '</span>';
+            const eArr = getEnemies();
+            for (const e of eArr) {
+                lines += '<br><span style="color:' + e.color + '">' + (e.id.substring(0,8)) + ': ' + (scores[e.id] || 0) + '</span>';
+            }
+            if (arenaMode === 'survival') lines = '<span style="color:#ffd700">Wave: ' + survivalWave + ' | Kills: ' + survivalScore + '</span>';
+            if (arenaMode === 'target') lines = '<span style="color:#ffd700">Hits: ' + targetHits + ' | Time: ' + Math.ceil(targetTimer) + 's</span>';
+            if (arenaMode === 'koth') lines += '<br><span style="color:#ffd700">Hill: ' + kothTimer.toFixed(1) + '/' + KOTH_WIN + 's</span>';
+            if (arenaMode === 'teams') lines = '<span style="color:' + TEAM_COLORS[0][0] + '">Blue: ' + teamScores[0] + '</span><br><span style="color:' + TEAM_COLORS[1][0] + '">Red: ' + teamScores[1] + '</span>';
+            sb.innerHTML = lines;
         }
     }
 
-    function showVictory() {
+    function showVictory(customSub) {
         document.getElementById('hud').classList.add('hidden');
         const screen = document.getElementById('victory-screen');
         screen.classList.remove('hidden');
         const h1 = document.getElementById('victory-text');
         const sub = document.getElementById('victory-sub');
         if (winner === 'player') {
-            h1.textContent = 'VICTORY'; h1.style.color = '#ffd700'; sub.textContent = 'Your formulas proved superior.';
+            h1.textContent = 'VICTORY'; h1.style.color = '#ffd700';
+            sub.textContent = customSub || 'Your formulas proved superior.';
             if (typeof Audio !== 'undefined') Audio.pvpWin();
         } else {
-            h1.textContent = 'DEFEAT'; h1.style.color = '#ff4444'; sub.textContent = 'Your equations were insufficient.';
+            h1.textContent = 'DEFEAT'; h1.style.color = '#ff4444';
+            sub.textContent = customSub || 'Your equations were insufficient.';
             if (typeof Audio !== 'undefined') Audio.pvpLose();
         }
     }
 
+    // ════════════════════════════════════════
+    //  RENDER
+    // ════════════════════════════════════════
     function render(ctx, W, H) {
         ctx.fillStyle = '#0a0806'; ctx.fillRect(0, 0, W, H);
-        ctx.strokeStyle = '#151210'; ctx.lineWidth = 1;
-        for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-        for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-        ctx.strokeStyle = '#2a2015'; ctx.lineWidth = 2; ctx.strokeRect(8, 8, W - 16, H - 16);
 
+        // Grid
+        ctx.strokeStyle = '#151210'; ctx.lineWidth = 1;
+        for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+        for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+        ctx.strokeStyle = '#2a2015'; ctx.lineWidth = 2; ctx.strokeRect(8, 8, W-16, H-16);
+
+        // KOTH zone
+        if (arenaMode === 'koth') {
+            ctx.save();
+            ctx.globalAlpha = 0.08 + Math.sin(performance.now()/300) * 0.04;
+            ctx.fillStyle = kothHolder === 'player' ? '#4488ff' : kothHolder ? '#ff4444' : '#ffd700';
+            ctx.beginPath(); ctx.arc(kothZone.x, kothZone.y, kothZone.r, 0, Math.PI*2); ctx.fill();
+            ctx.globalAlpha = 0.3;
+            ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = '#ffd700'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center';
+            ctx.fillText('HILL', kothZone.x, kothZone.y + 4);
+            ctx.restore();
+        }
+
+        // Particles
         for (const p of arenaParticles) {
-            ctx.globalAlpha = (p.life / p.maxLife) * 0.15;
-            ctx.fillStyle = p.color;
+            ctx.globalAlpha = (p.life/p.maxLife) * 0.15; ctx.fillStyle = p.color;
             ctx.fillRect(p.x, p.y, p.size, p.size);
         }
         ctx.globalAlpha = 1;
 
         ArconSystem.render(ctx);
-        renderMage(ctx, player, '#4488ff', '#88bbff');
-        for (const e of getEnemies()) {
-            renderMage(ctx, e, e.color || '#ff4444', e.colorLight || '#ff8877');
+
+        // Survival mobs
+        for (const mob of survivalEnemies) {
+            if (!mob.alive) continue;
+            ctx.fillStyle = mob.hitFlash > 0 ? '#fff' : mob.color;
+            ctx.fillRect(mob.x - mob.size/2, mob.y - mob.size/2, mob.size, mob.size);
+            // HP bar
+            ctx.fillStyle = '#111'; ctx.fillRect(mob.x - mob.size/2, mob.y - mob.size/2 - 5, mob.size, 3);
+            ctx.fillStyle = '#44cc44'; ctx.fillRect(mob.x - mob.size/2, mob.y - mob.size/2 - 5, mob.size * (mob.hp/mob.maxHp), 3);
         }
 
-        // Render arena bosses
+        // Target dummies
+        for (const t of targetDummies) {
+            if (!t.alive) continue;
+            ctx.fillStyle = t.hitFlash > 0 ? '#fff' : '#886644';
+            ctx.fillRect(t.x - 4, t.y + 4, 8, 6);
+            ctx.fillRect(t.x - 2, t.y - 10, 4, 14);
+            ctx.fillRect(t.x - 8, t.y - 6, 16, 4);
+            ctx.fillRect(t.x - 5, t.y - 16, 10, 10);
+        }
+
+        // Arena bosses
         for (const boss of arenaBosses) {
             if (!boss.alive) continue;
-            const flash = boss.hitFlash > 0;
-            const s = boss.size;
-            // Shadow
-            ctx.globalAlpha = 0.3;
-            ctx.fillStyle = '#000';
-            ctx.beginPath();
-            ctx.ellipse(boss.x, boss.y + s / 2 + 2, s * 0.4, 3, 0, 0, Math.PI * 2);
-            ctx.fill();
+            const fl = boss.hitFlash > 0, s = boss.size;
             ctx.globalAlpha = boss.spawnTimer > 0 ? 0.3 : 1;
-            // Body
-            ctx.fillStyle = flash ? '#fff' : boss.color;
-            ctx.fillRect(boss.x - s * 0.4, boss.y - s * 0.5, s * 0.8, s);
-            // Head
-            ctx.fillStyle = flash ? '#fff' : (boss.color + 'cc');
-            ctx.fillRect(boss.x - s * 0.3, boss.y - s * 0.8, s * 0.6, s * 0.35);
-            // Eyes
-            ctx.fillStyle = '#ff0';
-            ctx.fillRect(boss.x - s * 0.15, boss.y - s * 0.65, 3, 3);
-            ctx.fillRect(boss.x + s * 0.05, boss.y - s * 0.65, 3, 3);
-            // Boss aura
-            ctx.globalAlpha = 0.08 + Math.sin(performance.now() / 200) * 0.04;
-            ctx.fillStyle = boss.color;
-            ctx.beginPath();
-            ctx.arc(boss.x, boss.y, s * 1.2, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.fillStyle = fl ? '#fff' : boss.color;
+            ctx.fillRect(boss.x - s*.4, boss.y - s*.5, s*.8, s);
+            ctx.fillRect(boss.x - s*.3, boss.y - s*.8, s*.6, s*.35);
+            ctx.fillStyle = '#ff0'; ctx.fillRect(boss.x - s*.15, boss.y - s*.65, 3, 3); ctx.fillRect(boss.x + s*.05, boss.y - s*.65, 3, 3);
+            ctx.globalAlpha = 0.08 + Math.sin(performance.now()/200)*.04;
+            ctx.fillStyle = boss.color; ctx.beginPath(); ctx.arc(boss.x, boss.y, s*1.2, 0, Math.PI*2); ctx.fill();
             ctx.globalAlpha = 1;
-            // Name
-            ctx.fillStyle = '#ffcc44';
-            ctx.font = 'bold 9px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText(boss.name.replace(/_/g, ' ').toUpperCase(), boss.x, boss.y - s * 0.85 - 4);
-            // HP bar
-            const barW = Math.max(s + 10, 40);
-            const hpPct = boss.hp / boss.maxHp;
-            ctx.fillStyle = '#111';
-            ctx.fillRect(boss.x - barW / 2 - 1, boss.y - s / 2 - 14, barW + 2, 6);
-            ctx.fillStyle = hpPct > 0.5 ? '#44cc44' : hpPct > 0.25 ? '#cccc44' : '#cc4444';
-            ctx.fillRect(boss.x - barW / 2, boss.y - s / 2 - 13, barW * hpPct, 4);
+            ctx.fillStyle = '#ffcc44'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+            ctx.fillText(boss.name.replace(/_/g,' ').toUpperCase(), boss.x, boss.y - s*.85 - 4);
+            const bw = Math.max(s+10, 40), hp = boss.hp/boss.maxHp;
+            ctx.fillStyle = '#111'; ctx.fillRect(boss.x - bw/2 - 1, boss.y - s/2 - 14, bw+2, 6);
+            ctx.fillStyle = hp > .5 ? '#44cc44' : hp > .25 ? '#cccc44' : '#cc4444';
+            ctx.fillRect(boss.x - bw/2, boss.y - s/2 - 13, bw*hp, 4);
         }
 
-        // Room type label
-        if (arenaRoomType !== 'ffa') {
-            ctx.save();
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#ffd700';
-            ctx.globalAlpha = 0.5;
-            ctx.font = 'bold 11px "Courier New", monospace';
-            const labels = { boss: 'BOSS FIGHT', gauntlet: 'BOSS GAUNTLET (' + (gauntletIndex + 1) + '/' + gauntletBossOrder.length + ')', duel: '1v1 DUEL' };
-            ctx.fillText(labels[arenaRoomType] || arenaRoomType.toUpperCase(), W / 2, 22);
-            ctx.globalAlpha = 1;
+        // Player
+        if (player.alive && !playerDead) renderMage(ctx, player, arenaMode === 'teams' ? TEAM_COLORS[playerTeam][0] : '#4488ff', arenaMode === 'teams' ? TEAM_COLORS[playerTeam][1] : '#88bbff');
+
+        // Enemies
+        for (const e of getEnemies()) {
+            if (!e.alive) continue;
+            renderMage(ctx, e, e.color, e.colorLight);
+        }
+
+        // Melee arcs
+        if (meleeTimer > 0) {
+            const p = 1 - meleeTimer/MELEE_DURATION;
+            ctx.save(); ctx.globalAlpha = .6*(1-p); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.arc(player.x, player.y, MELEE_RANGE*(.3+p*.7), meleeAngle - MELEE_ARC/2, meleeAngle + MELEE_ARC/2); ctx.stroke();
+            ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(player.x, player.y, MELEE_RANGE*.6*(.3+p*.7), meleeAngle - MELEE_ARC/2 + p*.3, meleeAngle + MELEE_ARC/2 - p*.3); ctx.stroke();
+            ctx.restore();
+        }
+        for (const em of enemyMelees) {
+            const p = 1 - em.timer/MELEE_DURATION;
+            ctx.save(); ctx.globalAlpha = .4*(1-p); ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.arc(em.x, em.y, MELEE_RANGE*(.3+p*.7), em.angle - MELEE_ARC/2, em.angle + MELEE_ARC/2); ctx.stroke();
             ctx.restore();
         }
 
-        if (!gameOver) {
-            ctx.globalAlpha = 0.12; ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        // Aim line + crosshair
+        if (!gameOver && !playerDead) {
+            ctx.globalAlpha = .12; ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
             ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(mouse.x, mouse.y); ctx.stroke();
-            ctx.setLineDash([]); ctx.globalAlpha = 1;
-            ctx.strokeStyle = '#4488ff'; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
-            ctx.strokeRect(mouse.x - 4, mouse.y - 4, 8, 8);
-            ctx.fillStyle = '#4488ff'; ctx.fillRect(mouse.x - 1, mouse.y - 1, 2, 2);
+            ctx.setLineDash([]); ctx.globalAlpha = .4; ctx.strokeRect(mouse.x-4, mouse.y-4, 8, 8);
+            ctx.fillStyle = '#4488ff'; ctx.fillRect(mouse.x-1, mouse.y-1, 2, 2);
             ctx.globalAlpha = 1;
         }
+
+        // Burnout
         if (player.burnout > 0) {
-            ctx.globalAlpha = .4 + Math.sin(performance.now() / 100) * .2;
-            ctx.fillStyle = '#ff8800'; ctx.font = 'bold 10px "Courier New",monospace'; ctx.textAlign = 'center';
+            ctx.globalAlpha = .4 + Math.sin(performance.now()/100)*.2;
+            ctx.fillStyle = '#ff8800'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center';
             ctx.fillText('BURNOUT', player.x, player.y - 28); ctx.globalAlpha = 1;
         }
 
-        // Melee arc
-        if (meleeTimer > 0) {
-            const progress = 1 - meleeTimer / MELEE_DURATION;
-            ctx.save();
-            ctx.globalAlpha = 0.6 * (1 - progress);
-            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(player.x, player.y, MELEE_RANGE * (0.3 + progress * 0.7),
-                meleeAngle - MELEE_ARC / 2, meleeAngle + MELEE_ARC / 2);
-            ctx.stroke();
-            ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(player.x, player.y, MELEE_RANGE * 0.6 * (0.3 + progress * 0.7),
-                meleeAngle - MELEE_ARC / 2 + progress * 0.3, meleeAngle + MELEE_ARC / 2 - progress * 0.3);
-            ctx.stroke();
+        // Respawn overlay
+        if (playerDead) {
+            ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+            ctx.globalAlpha = 1; ctx.textAlign = 'center';
+            ctx.fillStyle = '#ff4444'; ctx.font = 'bold 24px monospace';
+            ctx.fillText('RESPAWNING...', W/2, H/2 - 10);
+            ctx.fillStyle = '#ffd700'; ctx.font = '14px monospace';
+            ctx.fillText(Math.ceil(respawnTimer) + 's', W/2, H/2 + 20);
             ctx.restore();
         }
-        // Enemy melee arcs
-        for (const em of enemyMelees) {
-            const p = 1 - em.timer / MELEE_DURATION;
-            ctx.save();
-            ctx.globalAlpha = 0.4 * (1 - p);
-            ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(em.x, em.y, MELEE_RANGE * (0.3 + p * 0.7),
-                em.angle - MELEE_ARC / 2, em.angle + MELEE_ARC / 2);
-            ctx.stroke();
-            ctx.restore();
-        }
-    }
-
-    function doMelee(mx, my) {
-        if (gameOver || meleeTimer > 0 || meleeCooldown > 0) return;
-        meleeAngle = Math.atan2(my - player.y, mx - player.x);
-        meleeTimer = MELEE_DURATION;
-        meleeCooldown = MELEE_COOLDOWN;
-        meleeHit = false;
-        if (typeof Audio !== 'undefined') Audio.melee();
-        // Slash particles
-        for (let i = 0; i < 6; i++) {
-            const a = meleeAngle - MELEE_ARC / 2 + (MELEE_ARC / 6) * i;
-            arenaParticles.push({
-                x: player.x + Math.cos(a) * MELEE_RANGE * 0.3,
-                y: player.y + Math.sin(a) * MELEE_RANGE * 0.3,
-                vx: Math.cos(a) * 80, vy: Math.sin(a) * 80,
-                life: 0.2, maxLife: 0.2, size: 2 + Math.random() * 2, color: '#ffffff',
-            });
-        }
-        Network.send({ type: 'melee', x: player.x, y: player.y, angle: meleeAngle });
     }
 
     function renderMage(ctx, mage, color, light) {
         const flash = mage.hitFlash > 0;
         const isDashing = mage.dashing;
-        const isMoving = mage === player ? (keys['w'] || keys['s'] || keys['a'] || keys['d'] || keys['arrowup'] || keys['arrowdown'] || keys['arrowleft'] || keys['arrowright']) : false;
-        const isMeleeing = mage === player ? (meleeTimer > 0) : (enemyMelees.length > 0);
-        const isHurt = mage.hitFlash > 0.1;
         const t = performance.now() / 1000;
+        const isPlayer = mage === player;
+        const isMoving = isPlayer ? (keys['w']||keys['s']||keys['a']||keys['d']||keys['arrowup']||keys['arrowdown']||keys['arrowleft']||keys['arrowright']) : false;
 
-        // Animation state
-        let animState = 'idle';
-        if (isDashing) animState = 'dash';
-        else if (isHurt) animState = 'hurt';
-        else if (isMeleeing) animState = 'melee';
-        else if (isMoving) animState = 'walk';
-
-        // Frame timing
-        const walkBob = Math.sin(t * 10) * 2;
         const idleBob = Math.sin(t * 2.5) * 1.5;
-        const breathe = Math.sin(t * 3) * 0.5;
+        const walkBob = Math.sin(t * 10) * 2;
 
-        // Ghost trail when dashing
-        if (isDashing) {
-            ctx.globalAlpha = 0.1;
-            ctx.fillStyle = color;
-            const stretchX = (mage.dashDirX || 0) * -25;
-            const stretchY = (mage.dashDirY || 0) * -25;
-            ctx.fillRect(mage.x - 6 + stretchX, mage.y - 14 + stretchY, 12, 24);
-            ctx.globalAlpha = 0.05;
-            ctx.fillRect(mage.x - 4 + stretchX * 2, mage.y - 10 + stretchY * 2, 8, 18);
-            ctx.globalAlpha = 0.15;
-            ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
-        }
+        let bodyOff = 0, legL = 0, legR = 0;
+        if (isDashing) bodyOff = -2;
+        else if (isMoving) { bodyOff = Math.abs(walkBob)*.5; legL = walkBob*1.5; legR = -walkBob*1.5; }
+        else bodyOff = idleBob;
 
-        // Shadow
-        ctx.globalAlpha = isDashing ? 0.15 : 0.3;
-        ctx.fillStyle = '#000';
-        const shadowW = isDashing ? 10 : 14;
-        ctx.fillRect(mage.x - shadowW/2, mage.y + 8 + (animState === 'walk' ? Math.abs(walkBob) * 0.5 : 0), shadowW, 3);
-        ctx.globalAlpha = isDashing ? 0.5 : 1;
+        if (isDashing) { ctx.globalAlpha = .1; ctx.fillStyle = color; ctx.fillRect(mage.x-6 + (mage.dashDirX||0)*-25, mage.y-14 + (mage.dashDirY||0)*-25, 12, 24); ctx.globalAlpha = isDashing ? .5 : 1; }
+        ctx.globalAlpha = isDashing ? .5 : 1;
+        ctx.fillStyle = '#000'; ctx.globalAlpha *= .3;
+        ctx.fillRect(mage.x - 7, mage.y + 8, 14, 3);
+        ctx.globalAlpha = isDashing ? .5 : 1;
 
-        // Calculate offsets based on animation state
-        let bodyOffY = 0, headOffY = 0, legLOff = 0, legROff = 0, armAngle = 0, bodyTilt = 0;
-
-        switch (animState) {
-            case 'idle':
-                bodyOffY = idleBob;
-                headOffY = idleBob * 0.7;
-                legLOff = 0; legROff = 0;
-                armAngle = Math.sin(t * 1.5) * 0.1;
-                break;
-            case 'walk':
-                bodyOffY = Math.abs(walkBob) * 0.5;
-                headOffY = Math.abs(walkBob) * 0.3;
-                legLOff = walkBob * 1.5;
-                legROff = -walkBob * 1.5;
-                armAngle = Math.sin(t * 10) * 0.4;
-                break;
-            case 'dash':
-                bodyOffY = -2;
-                headOffY = -3;
-                bodyTilt = (mage.dashDirX || 0) * 0.2;
-                break;
-            case 'melee': {
-                const prog = mage === player ? (1 - meleeTimer / MELEE_DURATION) : 0.5;
-                bodyOffY = -1;
-                armAngle = -1.5 + prog * 3;
-                bodyTilt = Math.sin(prog * Math.PI) * 0.15;
-                break;
-            }
-            case 'hurt':
-                bodyOffY = Math.sin(t * 30) * 2;
-                headOffY = Math.sin(t * 30 + 1) * 2;
-                break;
-        }
-
-        ctx.save();
-        ctx.translate(mage.x, mage.y + bodyOffY);
-        if (bodyTilt) ctx.rotate(bodyTilt);
-
-        // Legs (animated separately)
+        ctx.save(); ctx.translate(mage.x, mage.y + bodyOff);
         ctx.fillStyle = flash ? '#fff' : color;
-        ctx.fillRect(-5, 4 + legLOff, 4, 6);  // left leg
-        ctx.fillRect(1, 4 + legROff, 4, 6);    // right leg
-
-        // Body
-        ctx.fillRect(-5, -6 + breathe, 10, 10);
-
-        // Head
-        const headY = -14 + headOffY;
-        ctx.fillRect(-4, headY, 8, 8);
-
-        // Hat
+        ctx.fillRect(-5, 4+legL, 4, 6); ctx.fillRect(1, 4+legR, 4, 6);
+        ctx.fillRect(-5, -6, 10, 10);
+        const hy = -14;
+        ctx.fillRect(-4, hy, 8, 8);
         if (!flash) ctx.fillStyle = light;
-        ctx.fillRect(-6, headY - 2, 12, 2);      // brim
-        ctx.fillRect(-3, headY - 6, 6, 4);        // crown
-        ctx.fillRect(-1, headY - 8, 2, 2);        // tip
-
-        // Wand arm (rotates based on animation)
-        ctx.save();
-        ctx.translate(5, -2);
-        ctx.rotate(armAngle);
+        ctx.fillRect(-6, hy-2, 12, 2); ctx.fillRect(-3, hy-6, 6, 4); ctx.fillRect(-1, hy-8, 2, 2);
         if (!flash) ctx.fillStyle = '#ffd700';
-        ctx.fillRect(0, -2, 2, 12);              // wand shaft
-        ctx.globalAlpha = (isDashing ? 0.3 : 0.5) + Math.sin(t * 5) * 0.3;
-        ctx.fillStyle = flash ? '#fff' : '#ffd700';
-        ctx.fillRect(-1, -4, 4, 4);              // wand orb
-        ctx.globalAlpha = isDashing ? 0.5 : 1;
-        ctx.restore();
-
-        // Eyes (with blink animation)
-        const blinkPhase = t % 4;
-        const eyeH = (blinkPhase > 3.85 && blinkPhase < 3.95) ? 1 : 2;  // blink every ~4s
+        ctx.fillRect(5, -4, 2, 12);
+        ctx.globalAlpha = .5 + Math.sin(t*5)*.3; ctx.fillStyle = flash ? '#fff' : '#ffd700';
+        ctx.fillRect(4, -6, 4, 4); ctx.globalAlpha = 1;
         ctx.fillStyle = '#fff';
-        ctx.fillRect(-2, headY + 2, 2, eyeH);
-        ctx.fillRect(1, headY + 2, 2, eyeH);
-
-        // Eye pupils follow cursor/enemy direction
-        if (eyeH > 1) {
-            const lookTarget = mage === player ? mouse : (nearestEnemy() || player);
-            const lookDx = lookTarget.x - mage.x;
-            const lookOff = lookDx > 0 ? 1 : 0;
-            ctx.fillStyle = color;
-            ctx.fillRect(-2 + lookOff, headY + 2, 1, 1);
-            ctx.fillRect(1 + lookOff, headY + 2, 1, 1);
-        }
-
+        const blink = t % 4; const eyeH = (blink > 3.85 && blink < 3.95) ? 1 : 2;
+        ctx.fillRect(-2, hy+2, 2, eyeH); ctx.fillRect(1, hy+2, 2, eyeH);
         ctx.restore();
 
-        // Invuln shimmer
-        if (mage.invulnTimer > 0) {
-            ctx.globalAlpha = 0.15 + Math.sin(t * 50) * 0.1;
-            ctx.fillStyle = '#88ccff';
-            ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
-        }
-
+        if (mage.invulnTimer > 0) { ctx.globalAlpha = .15 + Math.sin(t*50)*.1; ctx.fillStyle = '#88ccff'; ctx.fillRect(mage.x-8, mage.y-16, 16, 28); }
         ctx.globalAlpha = 1;
+
+        // Name tag for enemies
+        if (!isPlayer) {
+            ctx.globalAlpha = 0.5; ctx.fillStyle = color; ctx.font = '8px monospace'; ctx.textAlign = 'center';
+            ctx.fillText(mage.id.substring(0,8), mage.x, mage.y - 22);
+            ctx.globalAlpha = 1;
+        }
     }
 
+    // ════════════════════════════════════════
+    //  INPUT
+    // ════════════════════════════════════════
     function onKeyDown(key) {
         keys[key.toLowerCase()] = true;
         if (key === 'Shift' || key === ' ') doDash();
         const num = parseInt(key);
-        if (num >= 1 && num <= 6) castPlayerSpellFull(num - 1);
+        if (num >= 1 && num <= 6) castPlayerSpell(num - 1);
     }
     function onKeyUp(key) { keys[key.toLowerCase()] = false; }
     function onMouseMove(x, y) { mouse.x = x; mouse.y = y; }
@@ -1035,12 +1024,5 @@ const Battle = (() => {
         init, update, render, handleNetMessage,
         onKeyDown, onKeyUp, onMouseMove, onMouseDown, onMouseUp,
         isGameOver: () => gameOver,
-        setSpellExprs: (spells) => {
-            // Attach expression strings so network can send them
-            for (const s of spells) {
-                // Already set by spellbook via blocks.toExpr
-            }
-            playerSpells = spells;
-        }
     };
 })();

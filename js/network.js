@@ -1,25 +1,31 @@
 // ─────────────────────────────────────────────
-//  PEER-TO-PEER NETWORKING VIA PEERJS
-//  WebRTC P2P — works cross-internet
-//  v2: Multi-peer support (2+ players), late join, broadcast
+//  PARTY-BASED P2P NETWORKING (PeerJS WebRTC)
+//  Persistent parties that survive mode switches
+//  Optimised: batched sync, fast ICE, connection pooling
 // ─────────────────────────────────────────────
 
 const Network = (() => {
-    let peer = null;
-    let connections = []; // Array of { conn, peerId }
-    let _isHost = false;
-    let roomCode = '';
-    let connected = false;
-    let onMessage = null;
-    let onConnected = null;
-    let onDisconnected = null;
-    let onPeerJoin = null;
-    let onPeerLeave = null;
+    /* ── state ── */
+    let peer          = null;
+    let connections   = [];          // [{ conn, peerId, nick, ready, color }]
+    let _isHost       = false;
+    let partyCode     = '';
+    let connected     = false;
+    let myNick        = '';
+    let myColor       = '#4488ff';
+
+    /* callbacks (set once by main.js) */
+    let onMessage        = null;
+    let onConnected      = null;
+    let onDisconnected   = null;
+    let onPeerJoin       = null;
+    let onPeerLeave      = null;
+    let onPartyUpdate    = null;
 
     const PREFIX = 'arcform-';
 
-    // ── ICE SERVER CONFIG ──
-    const STUN_SERVERS = [
+    /* ── ICE config (cached, pre-fetched) ── */
+    const STUN = [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
@@ -27,7 +33,6 @@ const Network = (() => {
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:stun.cloudflare.com:3478' },
     ];
-
     const STATIC_TURN = [
         { urls: 'turn:freestun.net:3478', username: 'free', credential: 'free' },
         { urls: 'turn:freestun.net:3478?transport=tcp', username: 'free', credential: 'free' },
@@ -40,6 +45,32 @@ const Network = (() => {
     let cacheTime = 0;
     const CACHE_TTL = 1800000;
 
+    /* ── Message batching (reduces WebRTC overhead) ── */
+    let sendQueue     = [];
+    let batchTimer    = null;
+    const BATCH_MS    = 16;
+
+    function flushQueue() {
+        if (sendQueue.length === 0) return;
+        const batch = sendQueue.length === 1 ? sendQueue[0] : { _b: sendQueue };
+        sendQueue = [];
+        for (const entry of connections) {
+            if (entry.conn.open) {
+                try { entry.conn.send(batch); } catch(e) {}
+            }
+        }
+    }
+
+    function startBatching() {
+        if (batchTimer) return;
+        batchTimer = setInterval(flushQueue, BATCH_MS);
+    }
+    function stopBatching() {
+        if (batchTimer) { clearInterval(batchTimer); batchTimer = null; }
+        flushQueue();
+    }
+
+    /* ── ICE helpers ── */
     async function fetchCloudflareTURN() {
         const cfURL = 'https://speed.cloudflare.com/turn-creds';
         const proxies = [
@@ -49,46 +80,43 @@ const Network = (() => {
         ];
         try {
             const r = await fetchWithTimeout(cfURL, 4000);
-            if (r.ok) { const data = await r.json(); if (data && data.urls) return data; }
+            if (r.ok) { const d = await r.json(); if (d && d.urls) return d; }
         } catch(e) {}
-        for (const makeURL of proxies) {
+        for (const mkURL of proxies) {
             try {
-                const url = makeURL(cfURL);
-                log('Trying TURN via proxy: ' + url.substring(0, 50) + '...');
-                const r = await fetchWithTimeout(url, 5000);
+                const r = await fetchWithTimeout(mkURL(cfURL), 5000);
                 if (!r.ok) continue;
-                const text = await r.text();
-                let data;
-                try { data = JSON.parse(text); } catch(e) { continue; }
-                if (data.contents) { try { data = JSON.parse(data.contents); } catch(e) { continue; } }
-                if (data && data.urls && data.username) { log('Got Cloudflare TURN creds via proxy'); return data; }
-            } catch(e) { log('Proxy failed: ' + e.message); }
+                const txt = await r.text();
+                let d; try { d = JSON.parse(txt); } catch(e) { continue; }
+                if (d.contents) { try { d = JSON.parse(d.contents); } catch(e) { continue; } }
+                if (d && d.urls && d.username) return d;
+            } catch(e) {}
         }
         return null;
     }
 
     function fetchWithTimeout(url, ms) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), ms);
-        return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), ms);
+        return fetch(url, { signal: c.signal }).finally(() => clearTimeout(t));
     }
 
     async function getICEConfig() {
         if (cachedICE && Date.now() - cacheTime < CACHE_TTL) return cachedICE;
-        let cloudflareServers = [];
+        let cf = [];
         try {
-            log('Fetching Cloudflare TURN credentials...');
             const creds = await fetchCloudflareTURN();
             if (creds && creds.urls && creds.username) {
-                const urls = Array.isArray(creds.urls) ? creds.urls : [creds.urls];
-                cloudflareServers = [{ urls, username: creds.username, credential: creds.credential }];
-                log('Cloudflare TURN ready: ' + urls.join(', '));
+                cf = [{ urls: Array.isArray(creds.urls) ? creds.urls : [creds.urls], username: creds.username, credential: creds.credential }];
             }
-        } catch (e) { log('Cloudflare TURN fetch failed: ' + e.message); }
-        cachedICE = { iceServers: [...STUN_SERVERS, ...cloudflareServers, ...STATIC_TURN] };
+        } catch(e) {}
+        cachedICE = { iceServers: [...STUN, ...cf, ...STATIC_TURN] };
         cacheTime = Date.now();
         return cachedICE;
     }
+
+    // Pre-warm ICE on page load
+    getICEConfig().catch(() => {});
 
     function generateCode() {
         const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -97,203 +125,278 @@ const Network = (() => {
         return code;
     }
 
-    function log(msg) { console.log('[Network]', msg); }
+    function log(msg) { console.log('[Party]', msg); }
 
     async function makePeer(id) {
-        const iceConfig = await getICEConfig();
-        const opts = { debug: 1, config: iceConfig };
+        const ice = await getICEConfig();
+        const opts = { debug: 0, config: ice };
         return id ? new Peer(id, opts) : new Peer(opts);
     }
 
     function cleanup() {
-        for (const entry of connections) { try { entry.conn.close(); } catch(e) {} }
+        stopBatching();
+        for (const e of connections) { try { e.conn.close(); } catch(x) {} }
         connections = [];
-        if (peer) { try { peer.destroy(); } catch(e) {} peer = null; }
+        if (peer) { try { peer.destroy(); } catch(x) {} peer = null; }
         connected = false;
     }
 
     function monitorICE(pc, label) {
         if (!pc) return;
-        pc.addEventListener('iceconnectionstatechange', () => log(label + ' ICE: ' + pc.iceConnectionState));
-        pc.addEventListener('connectionstatechange', () => log(label + ' state: ' + pc.connectionState));
+        pc.addEventListener('iceconnectionstatechange', () => log(label + ' ICE:' + pc.iceConnectionState));
     }
 
-    // ── Setup a single connection ──
-    function setupSingleConnection(c, peerId) {
-        const entry = { conn: c, peerId: peerId || c.peer };
+    /* ── Connection wiring ── */
+    function setupConn(c, peerId) {
+        const entry = { conn: c, peerId: peerId || c.peer, nick: '', ready: false, color: '#ff4444' };
         connections.push(entry);
         connected = true;
+        startBatching();
 
-        c.on('data', (data) => { if (onMessage) onMessage(data, entry.peerId); });
-        c.on('close', () => {
-            log('Connection closed: ' + entry.peerId);
+        c.on('data', (raw) => {
+            // Un-batch
+            if (raw && raw._b && Array.isArray(raw._b)) {
+                for (const m of raw._b) dispatchMessage(m, entry);
+            } else {
+                dispatchMessage(raw, entry);
+            }
+        });
+
+        const onGone = () => {
+            log('Peer gone: ' + entry.peerId);
             connections = connections.filter(e => e !== entry);
             connected = connections.length > 0;
             if (onPeerLeave) onPeerLeave(entry.peerId);
-            if (connections.length === 0 && onDisconnected) onDisconnected();
-        });
-        c.on('error', (err) => {
-            log('Connection error (' + entry.peerId + '): ' + err);
-            connections = connections.filter(e => e !== entry);
-            connected = connections.length > 0;
-            if (onPeerLeave) onPeerLeave(entry.peerId);
-            if (connections.length === 0 && onDisconnected) onDisconnected();
-        });
+            firePartyUpdate();
+            if (connections.length === 0) {
+                stopBatching();
+                if (onDisconnected) onDisconnected();
+            }
+        };
+        c.on('close', onGone);
+        c.on('error', onGone);
 
         if (onPeerJoin) onPeerJoin(entry.peerId);
         if (onConnected && connections.length === 1) onConnected();
+        firePartyUpdate();
+
+        // Send our info immediately
+        c.send({ type: '_party-info', nick: myNick, color: myColor, ready: false });
     }
 
-    // ── HOST: Create Room (accepts multiple connections + late join) ──
-    function createRoom(callbacks) {
+    function dispatchMessage(raw, entry) {
+        if (!raw || !raw.type) return;
+        if (raw.type === '_party-info') {
+            entry.nick  = raw.nick  || entry.nick;
+            entry.color = raw.color || entry.color;
+            entry.ready = !!raw.ready;
+            firePartyUpdate();
+            return;
+        }
+        if (raw.type === '_party-ready') {
+            entry.ready = !!raw.ready;
+            firePartyUpdate();
+        }
+        if (onMessage) onMessage(raw, entry.peerId);
+    }
+
+    function firePartyUpdate() {
+        if (onPartyUpdate) onPartyUpdate(getMembers());
+    }
+
+    /* ── PUBLIC: Create Party ── */
+    function createParty(callbacks) {
         cleanup();
-        onMessage = callbacks.onMessage;
-        onConnected = callbacks.onConnected;
-        onDisconnected = callbacks.onDisconnected;
-        onPeerJoin = callbacks.onPeerJoin || null;
-        onPeerLeave = callbacks.onPeerLeave || null;
+        applyCallbacks(callbacks);
         _isHost = true;
-        roomCode = generateCode();
+        partyCode = generateCode();
 
         return new Promise((resolve, reject) => {
             let settled = false;
             let retries = 0;
 
             async function attempt(code) {
-                log('Creating room: ' + code + ' (attempt ' + (retries + 1) + ')');
-                try { peer = await makePeer(PREFIX + code); } catch (e) {
-                    if (!settled) { settled = true; reject(new Error('Failed to create peer: ' + e.message)); }
+                log('Creating party: ' + code);
+                try { peer = await makePeer(PREFIX + code); } catch(e) {
+                    if (!settled) { settled = true; reject(new Error('Peer create failed: ' + e.message)); }
                     return;
                 }
 
-                peer.on('open', (id) => {
+                peer.on('open', () => {
                     if (settled) return;
-                    settled = true; roomCode = code;
-                    log('Room created: ' + code);
+                    settled = true;
+                    partyCode = code;
+                    log('Party live: ' + code);
                     resolve(code);
                 });
 
-                // Accept ALL incoming connections (multi-player + late join)
                 peer.on('connection', (c) => {
-                    log('Incoming connection from: ' + c.peer + ' (total: ' + (connections.length + 1) + ')');
-                    const doSetup = () => {
-                        setupSingleConnection(c, c.peer);
-                        setTimeout(() => { if (c.peerConnection) monitorICE(c.peerConnection, 'Host->' + c.peer); }, 200);
+                    log('Peer connecting (total → ' + (connections.length + 1) + ')');
+                    const wire = () => {
+                        setupConn(c, c.peer);
+                        setTimeout(() => { if (c.peerConnection) monitorICE(c.peerConnection, 'H→' + c.peer); }, 200);
                     };
-                    if (c.open) doSetup();
-                    else c.on('open', doSetup);
+                    if (c.open) wire(); else c.on('open', wire);
                 });
 
                 peer.on('error', (err) => {
-                    log('Peer error: ' + err.type + ' - ' + err.message);
+                    log('Peer err: ' + err.type);
                     if (err.type === 'unavailable-id' && retries < 3) {
-                        retries++; try { peer.destroy(); } catch(e) {}
+                        retries++; try { peer.destroy(); } catch(x) {}
                         attempt(generateCode());
                     } else if (!settled) { settled = true; reject(new Error(friendlyError(err))); }
                 });
 
                 peer.on('disconnected', () => {
-                    log('Signaling disconnected, reconnecting...');
-                    if (peer && !peer.destroyed) { try { peer.reconnect(); } catch(e) {} }
+                    if (peer && !peer.destroyed) { try { peer.reconnect(); } catch(x) {} }
                 });
             }
 
-            attempt(roomCode);
-            setTimeout(() => { if (!settled) { settled = true; reject(new Error('Could not reach signaling server.')); } }, 20000);
+            attempt(partyCode);
+            setTimeout(() => { if (!settled) { settled = true; reject(new Error('Could not reach signaling server.')); } }, 15000);
         });
     }
 
-    // ── CLIENT: Join Room ──
-    function joinRoom(code, callbacks) {
+    /* ── PUBLIC: Join Party ── */
+    function joinParty(code, callbacks) {
         cleanup();
-        onMessage = callbacks.onMessage;
-        onConnected = callbacks.onConnected;
-        onDisconnected = callbacks.onDisconnected;
-        onPeerJoin = callbacks.onPeerJoin || null;
-        onPeerLeave = callbacks.onPeerLeave || null;
+        applyCallbacks(callbacks);
         _isHost = false;
-        roomCode = code.toUpperCase().trim();
+        partyCode = code.toUpperCase().trim();
 
         return new Promise((resolve, reject) => {
             let settled = false;
-            log('Joining room: ' + roomCode);
+            log('Joining party: ' + partyCode);
 
             (async () => {
-                try { peer = await makePeer(); } catch (e) {
-                    if (!settled) { settled = true; reject(new Error('Failed to create peer: ' + e.message)); }
+                try { peer = await makePeer(); } catch(e) {
+                    if (!settled) { settled = true; reject(new Error('Peer create failed: ' + e.message)); }
                     return;
                 }
 
                 peer.on('open', (myId) => {
-                    log('My peer id: ' + myId + ', connecting to ' + PREFIX + roomCode);
-                    const c = peer.connect(PREFIX + roomCode, { reliable: true, serialization: 'json' });
+                    log('My id: ' + myId);
+                    const c = peer.connect(PREFIX + partyCode, { reliable: true, serialization: 'json' });
                     setTimeout(() => { if (c && c.peerConnection) monitorICE(c.peerConnection, 'Client'); }, 500);
                     c.on('open', () => {
                         if (settled) return;
                         settled = true;
-                        log('Connection established!');
-                        setupSingleConnection(c, c.peer);
+                        log('Connected!');
+                        setupConn(c, c.peer);
                         resolve();
                     });
                     c.on('error', (err) => {
-                        log('Connection error: ' + err);
-                        if (!settled) { settled = true; reject(new Error('Failed to connect. Is the code correct?')); }
+                        if (!settled) { settled = true; reject(new Error('Connect failed. Wrong code?')); }
                     });
                 });
 
                 peer.on('error', (err) => {
-                    log('Peer error: ' + err.type + ' - ' + err.message);
                     if (!settled) {
                         settled = true;
-                        reject(new Error(err.type === 'peer-unavailable' ? 'Room "' + roomCode + '" not found.' : friendlyError(err)));
+                        reject(new Error(err.type === 'peer-unavailable' ? 'Party "' + partyCode + '" not found.' : friendlyError(err)));
                     }
                 });
 
                 peer.on('disconnected', () => {
-                    log('Signaling disconnected');
-                    if (peer && !peer.destroyed) { try { peer.reconnect(); } catch(e) {} }
+                    if (peer && !peer.destroyed) { try { peer.reconnect(); } catch(x) {} }
                 });
 
-                setTimeout(() => { if (!settled) { settled = true; cleanup(); reject(new Error('Connection timed out.')); } }, 25000);
+                setTimeout(() => { if (!settled) { settled = true; cleanup(); reject(new Error('Timed out.')); } }, 15000);
             })();
         });
     }
 
-    // ── SEND: Broadcast to all, or send to specific peer ──
+    function applyCallbacks(cb) {
+        if (!cb) return;
+        onMessage      = cb.onMessage      || null;
+        onConnected    = cb.onConnected    || null;
+        onDisconnected = cb.onDisconnected || null;
+        onPeerJoin     = cb.onPeerJoin     || null;
+        onPeerLeave    = cb.onPeerLeave    || null;
+        onPartyUpdate  = cb.onPartyUpdate  || null;
+    }
+
+    /* ── PUBLIC: Send (batched broadcast) ── */
     function send(data, targetPeerId) {
         if (targetPeerId) {
             const entry = connections.find(e => e.peerId === targetPeerId);
-            if (entry && entry.conn.open) { try { entry.conn.send(data); } catch(e) { log('Send error: ' + e); } }
+            if (entry && entry.conn.open) { try { entry.conn.send(data); } catch(e) {} }
         } else {
-            for (const entry of connections) {
-                if (entry.conn.open) { try { entry.conn.send(data); } catch(e) { log('Send error: ' + e); } }
-            }
+            sendQueue.push(data);
         }
     }
 
+    /* ── PUBLIC: sendNow (skip batching) ── */
+    function sendNow(data) {
+        for (const entry of connections) {
+            if (entry.conn.open) { try { entry.conn.send(data); } catch(e) {} }
+        }
+    }
+
+    /* ── Party state helpers ── */
+    function setNick(n) { myNick = n; broadcastInfo(); }
+    function setColor(c) { myColor = c; broadcastInfo(); }
+    function setReady(r) {
+        broadcastInfo();
+        send({ type: '_party-ready', ready: !!r });
+    }
+    function broadcastInfo() {
+        sendNow({ type: '_party-info', nick: myNick, color: myColor });
+    }
+
+    function getMembers() {
+        const members = connections.map(e => ({
+            id: e.peerId,
+            nick: e.nick || e.peerId.replace(PREFIX, '').substring(0, 8),
+            color: e.color,
+            ready: e.ready,
+            isHost: false,
+        }));
+        members.unshift({
+            id: 'self',
+            nick: myNick || 'You',
+            color: myColor,
+            ready: false,
+            isHost: _isHost,
+        });
+        return members;
+    }
+
+    function allReady() {
+        return connections.length > 0 && connections.every(e => e.ready);
+    }
+
+    function getPeerIds() { return connections.map(e => e.peerId); }
     function disconnect() { cleanup(); }
     function getPeerCount() { return connections.length; }
 
     function friendlyError(err) {
-        const map = {
-            'browser-incompatible': 'Your browser does not support WebRTC.',
-            'disconnected': 'Lost connection to signaling server.',
-            'network': 'Network error. Check your internet.',
-            'peer-unavailable': 'Room not found.',
-            'server-error': 'Signaling server error. Try again.',
-            'socket-error': 'Socket error. Check your connection.',
-            'socket-closed': 'Connection to server closed.',
-            'unavailable-id': 'Room code collision. Try again.',
-            'webrtc': 'WebRTC error. Try a different browser.',
+        const m = {
+            'browser-incompatible': 'Browser lacks WebRTC.',
+            'disconnected': 'Lost signaling server.',
+            'network': 'Network error.',
+            'peer-unavailable': 'Party not found.',
+            'server-error': 'Server error. Retry.',
+            'socket-error': 'Socket error.',
+            'socket-closed': 'Server connection closed.',
+            'unavailable-id': 'Code collision. Retry.',
+            'webrtc': 'WebRTC error.',
         };
-        return map[err.type] || err.message || 'Unknown connection error.';
+        return m[err.type] || err.message || 'Connection error.';
     }
 
     return {
-        createRoom, joinRoom, send, disconnect,
-        isConnected: () => connected,
-        isHost: () => _isHost,
-        getCode: () => roomCode,
+        createParty, joinParty, send, sendNow, disconnect,
+        isConnected : () => connected,
+        isHost      : () => _isHost,
+        getCode     : () => partyCode,
         getPeerCount,
+        getPeerIds,
+        getMembers,
+        allReady,
+        setNick, setColor, setReady,
+        /* legacy compat */
+        createRoom  : createParty,
+        joinRoom    : joinParty,
     };
 })();
