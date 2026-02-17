@@ -53,6 +53,7 @@
     }
 
     document.getElementById('modePvp').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         gameMode = 'pvp';
         document.getElementById('mode-select').classList.add('hidden');
         state = 'lobby';
@@ -60,6 +61,7 @@
     });
 
     document.getElementById('modeCampaign').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         gameMode = 'campaign';
         document.getElementById('mode-select').classList.add('hidden');
         state = 'lobby';
@@ -110,6 +112,7 @@
     };
 
     document.getElementById('createRoom').addEventListener('click', async () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         document.getElementById('roomStatus').textContent = 'Creating room...';
         try {
             const code = await Network.createRoom(netCallbacks);
@@ -124,6 +127,7 @@
     });
 
     document.getElementById('joinRoom').addEventListener('click', async () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         const code = document.getElementById('roomCodeInput').value.trim();
         if (!code) return;
         document.getElementById('roomStatus').textContent = 'Connecting...';
@@ -137,6 +141,7 @@
 
     // Solo campaign button
     document.getElementById('soloBtn').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         document.getElementById('lobby').classList.add('hidden');
         state = 'spellbook';
         Spellbook.init(onPlayerReady);
@@ -190,6 +195,7 @@
 
     // ── RESTART ──
     document.getElementById('restartBtn').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
         document.getElementById('victory-screen').classList.add('hidden');
         document.getElementById('hud').classList.add('hidden');
         document.getElementById('campaign-hud').classList.add('hidden');

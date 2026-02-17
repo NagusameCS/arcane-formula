@@ -306,11 +306,50 @@ const Audio = (() => {
         musicNodes.push(pulse, pulseG, pulseLFO, pulseLFOG);
     }
 
+    function melee() {
+        const c = ensureCtx();
+        const osc = c.createOscillator();
+        const g = c.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, c.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(80, c.currentTime + 0.12);
+        g.gain.setValueAtTime(0.15, c.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.12);
+        osc.connect(g);
+        g.connect(sfxGain);
+        osc.start();
+        osc.stop(c.currentTime + 0.12);
+        playNoise(0.08, 0.1);
+    }
+
+    function levelUp() {
+        const notes = [523, 659, 784, 1047, 1318];
+        notes.forEach((f, i) => {
+            setTimeout(() => playTone(f, 0.25, 'sine', 0.12), i * 100);
+        });
+        setTimeout(() => playTone(1318, 0.5, 'triangle', 0.08), 500);
+    }
+
+    function pvpWin() {
+        const notes = [392, 523, 659, 784];
+        notes.forEach((f, i) => {
+            setTimeout(() => playTone(f, 0.3, 'square', 0.1), i * 150);
+        });
+    }
+
+    function pvpLose() {
+        const notes = [300, 250, 200, 150];
+        notes.forEach((f, i) => {
+            setTimeout(() => playTone(f, 0.25, 'sawtooth', 0.08), i * 120);
+        });
+    }
+
     return {
         ensureCtx,
         cast, hit, dash, enemyHit, enemyDeath,
         chest, trap, playerHurt, bossRoar,
         floorClear, death, menuClick, stairsDown, dialogueBlip,
+        melee, levelUp, pvpWin, pvpLose,
         startMusic, stopMusic, bossMusic,
     };
 })();

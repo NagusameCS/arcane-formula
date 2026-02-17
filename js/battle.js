@@ -16,6 +16,13 @@ const Battle = (() => {
     const DASH_INVULN = 0.25;
     const SYNC_RATE = 1 / 20; // 20 Hz
 
+    // Melee constants
+    const MELEE_RANGE = 50;
+    const MELEE_ARC = Math.PI * 0.6;
+    const MELEE_COOLDOWN = 0.35;
+    const MELEE_DURATION = 0.15;
+    const MELEE_DAMAGE = 12;
+
     let player, enemy;
     let playerSpells = [];
     let playerCasts = [];
@@ -26,6 +33,11 @@ const Battle = (() => {
     let winner = '';
     let syncTimer = 0;
     let arenaParticles = [];
+    let meleeTimer = 0;
+    let meleeCooldown = 0;
+    let meleeAngle = 0;
+    let meleeHit = false;
+    let enemyMelees = []; // visual only
 
     function init(compiledSpells) {
         ArconSystem.setBoundsMode('arena');
@@ -53,6 +65,10 @@ const Battle = (() => {
         keys = {};
         arenaParticles = [];
         syncTimer = 0;
+        meleeTimer = 0;
+        meleeCooldown = 0;
+        meleeHit = false;
+        enemyMelees = [];
 
         ArconSystem.reset();
 
@@ -124,6 +140,33 @@ const Battle = (() => {
         if (player.invulnTimer > 0) player.invulnTimer -= dt;
         if (enemy.invulnTimer > 0) enemy.invulnTimer -= dt;
 
+        // ── Melee ──
+        if (meleeCooldown > 0) meleeCooldown -= dt;
+        if (meleeTimer > 0) {
+            meleeTimer -= dt;
+            if (!meleeHit) {
+                const dx = enemy.x - player.x, dy = enemy.y - player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < MELEE_RANGE) {
+                    const angle = Math.atan2(dy, dx);
+                    let diff = angle - meleeAngle;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    if (Math.abs(diff) < MELEE_ARC / 2 && enemy.invulnTimer <= 0 && !enemy.dashing) {
+                        meleeHit = true;
+                        enemy.hp -= MELEE_DAMAGE;
+                        enemy.hitFlash = 0.3;
+                        if (typeof Audio !== 'undefined') Audio.hit();
+                        Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
+                    }
+                }
+            }
+        }
+        for (let i = enemyMelees.length - 1; i >= 0; i--) {
+            enemyMelees[i].timer -= dt;
+            if (enemyMelees[i].timer <= 0) enemyMelees.splice(i, 1);
+        }
+
         // ── Mana regen (only for non-locked mana) ──
         const regenRate = player.burnout > 0 ? MANA_REGEN_BURNOUT : MANA_REGEN;
         player.mana = Math.min(MANA_MAX, player.mana + regenRate * dt);
@@ -193,6 +236,7 @@ const Battle = (() => {
 
         const cast = ArconSystem.castSpell(spell, player, enemy, mouse.x, mouse.y);
         playerCasts.push(cast);
+        if (typeof Audio !== 'undefined') Audio.cast();
 
         // Send cast to opponent
         Network.send({
@@ -234,6 +278,8 @@ const Battle = (() => {
             player.dashChainCount = 1;
             player.dashCooldown = DASH_COOLDOWN;
         }
+
+        if (typeof Audio !== 'undefined') Audio.dash();
 
         Network.send({ type: 'dash', dirX: player.dashDirX, dirY: player.dashDirY, chain: player.dashChainCount });
     }
@@ -303,6 +349,27 @@ const Battle = (() => {
                 setTimeout(() => { enemy.dashing = false; }, DASH_DURATION * 1000);
                 break;
 
+            case 'melee':
+                // Show enemy melee visual
+                enemyMelees.push({ x: data.x, y: data.y, angle: data.angle, timer: MELEE_DURATION });
+                // Damage check — if we're in their cone
+                if (!player.dashing && player.invulnTimer <= 0) {
+                    const dx = player.x - data.x, dy = player.y - data.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < MELEE_RANGE) {
+                        const angle = Math.atan2(dy, dx);
+                        let diff = angle - data.angle;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        if (Math.abs(diff) < MELEE_ARC / 2) {
+                            player.hp -= MELEE_DAMAGE;
+                            player.hitFlash = 0.3;
+                            if (typeof Audio !== 'undefined') Audio.playerHurt();
+                        }
+                    }
+                }
+                break;
+
             case 'gameover':
                 if (!gameOver) { gameOver = true; winner = data.winner; showVictory(); }
                 break;
@@ -325,6 +392,7 @@ const Battle = (() => {
 
         const cast = ArconSystem.castSpell(spell, player, enemy, mouse.x, mouse.y);
         playerCasts.push(cast);
+        if (typeof Audio !== 'undefined') Audio.cast();
 
         // Send full formula if available
         if (spell.xExpr && spell.yExpr) {
@@ -388,8 +456,13 @@ const Battle = (() => {
         screen.classList.remove('hidden');
         const h1 = document.getElementById('victory-text');
         const sub = document.getElementById('victory-sub');
-        if (winner === 'player') { h1.textContent = 'VICTORY'; h1.style.color = '#ffd700'; sub.textContent = 'Your formulas proved superior.'; }
-        else { h1.textContent = 'DEFEAT'; h1.style.color = '#ff4444'; sub.textContent = 'Your equations were insufficient.'; }
+        if (winner === 'player') {
+            h1.textContent = 'VICTORY'; h1.style.color = '#ffd700'; sub.textContent = 'Your formulas proved superior.';
+            if (typeof Audio !== 'undefined') Audio.pvpWin();
+        } else {
+            h1.textContent = 'DEFEAT'; h1.style.color = '#ff4444'; sub.textContent = 'Your equations were insufficient.';
+            if (typeof Audio !== 'undefined') Audio.pvpLose();
+        }
     }
 
     function render(ctx, W, H) {
@@ -424,6 +497,56 @@ const Battle = (() => {
             ctx.fillStyle = '#ff8800'; ctx.font = 'bold 10px "Courier New",monospace'; ctx.textAlign = 'center';
             ctx.fillText('BURNOUT', player.x, player.y - 28); ctx.globalAlpha = 1;
         }
+
+        // Melee arc
+        if (meleeTimer > 0) {
+            const progress = 1 - meleeTimer / MELEE_DURATION;
+            ctx.save();
+            ctx.globalAlpha = 0.6 * (1 - progress);
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, MELEE_RANGE * (0.3 + progress * 0.7),
+                meleeAngle - MELEE_ARC / 2, meleeAngle + MELEE_ARC / 2);
+            ctx.stroke();
+            ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, MELEE_RANGE * 0.6 * (0.3 + progress * 0.7),
+                meleeAngle - MELEE_ARC / 2 + progress * 0.3, meleeAngle + MELEE_ARC / 2 - progress * 0.3);
+            ctx.stroke();
+            ctx.restore();
+        }
+        // Enemy melee arcs
+        for (const em of enemyMelees) {
+            const p = 1 - em.timer / MELEE_DURATION;
+            ctx.save();
+            ctx.globalAlpha = 0.4 * (1 - p);
+            ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(em.x, em.y, MELEE_RANGE * (0.3 + p * 0.7),
+                em.angle - MELEE_ARC / 2, em.angle + MELEE_ARC / 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    function doMelee(mx, my) {
+        if (gameOver || meleeTimer > 0 || meleeCooldown > 0) return;
+        meleeAngle = Math.atan2(my - player.y, mx - player.x);
+        meleeTimer = MELEE_DURATION;
+        meleeCooldown = MELEE_COOLDOWN;
+        meleeHit = false;
+        if (typeof Audio !== 'undefined') Audio.melee();
+        // Slash particles
+        for (let i = 0; i < 6; i++) {
+            const a = meleeAngle - MELEE_ARC / 2 + (MELEE_ARC / 6) * i;
+            arenaParticles.push({
+                x: player.x + Math.cos(a) * MELEE_RANGE * 0.3,
+                y: player.y + Math.sin(a) * MELEE_RANGE * 0.3,
+                vx: Math.cos(a) * 80, vy: Math.sin(a) * 80,
+                life: 0.2, maxLife: 0.2, size: 2 + Math.random() * 2, color: '#ffffff',
+            });
+        }
+        Network.send({ type: 'melee', x: player.x, y: player.y, angle: meleeAngle });
     }
 
     function renderMage(ctx, mage, color, light) {
@@ -489,7 +612,7 @@ const Battle = (() => {
     }
     function onKeyUp(key) { keys[key.toLowerCase()] = false; }
     function onMouseMove(x, y) { mouse.x = x; mouse.y = y; }
-    function onMouseDown(x, y) { mouse.x = x; mouse.y = y; }
+    function onMouseDown(x, y) { mouse.x = x; mouse.y = y; doMelee(x, y); }
     function onMouseUp() {}
 
     return {

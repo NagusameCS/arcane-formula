@@ -426,6 +426,38 @@ const Dungeon = (() => {
                isWalkable(dungeon, px + r, py + r);
     }
 
+    // Clamp a position to the nearest walkable tile
+    // Used to unstick players who end up in walls
+    function clampToWalkable(dungeon, px, py, radius) {
+        if (isWalkableBox(dungeon, px, py, radius)) return { x: px, y: py };
+        // Search in expanding rings for a walkable tile
+        for (let r = 1; r <= 5; r++) {
+            const step = TILE_SIZE * r;
+            const offsets = [
+                [0, -step], [0, step], [-step, 0], [step, 0],
+                [-step, -step], [step, -step], [-step, step], [step, step],
+            ];
+            for (const [ox, oy] of offsets) {
+                const nx = px + ox, ny = py + oy;
+                if (isWalkableBox(dungeon, nx, ny, radius)) return { x: nx, y: ny };
+            }
+        }
+        // Last resort: teleport to dungeon start
+        return {
+            x: dungeon.startX * TILE_SIZE + TILE_SIZE / 2,
+            y: dungeon.startY * TILE_SIZE + TILE_SIZE / 2,
+        };
+    }
+
+    // Enforce world bounds (cannot leave the dungeon map area)
+    function enforceWorldBounds(px, py, dungeon) {
+        const margin = TILE_SIZE;
+        return {
+            x: Math.max(margin, Math.min(dungeon.pixelW - margin, px)),
+            y: Math.max(margin, Math.min(dungeon.pixelH - margin, py)),
+        };
+    }
+
     // -- MINIMAP --
     function renderMinimap(minimapCanvas, dungeon, playerX, playerY, allies) {
         const mctx = minimapCanvas.getContext('2d');
@@ -532,6 +564,7 @@ const Dungeon = (() => {
     return {
         TILE, FLOOR_THEMES, FLOOR_ORDER, TILE_SIZE, MAP_W, MAP_H, ZOOM,
         generate, preRender, render, updateCamera, tileAt, isWalkable, isWalkableBox,
+        clampToWalkable, enforceWorldBounds,
         getCamera: () => camera,
         renderMinimap, screenToWorld, worldToScreen,
     };
