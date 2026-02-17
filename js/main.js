@@ -50,6 +50,13 @@
     // ── MODE SELECT ──
     function showModeSelect() {
         document.getElementById('mode-select').classList.remove('hidden');
+        // Show/hide continue button based on save data
+        const continueBtn = document.getElementById('modeContinue');
+        if (continueBtn && typeof Campaign !== 'undefined' && Campaign.hasSave()) {
+            continueBtn.classList.remove('hidden');
+        } else if (continueBtn) {
+            continueBtn.classList.add('hidden');
+        }
     }
 
     document.getElementById('modePvp').addEventListener('click', () => {
@@ -68,6 +75,22 @@
         showLobby();
     });
 
+    // Continue from saved campaign
+    document.getElementById('modeContinue').addEventListener('click', () => {
+        if (typeof Audio !== 'undefined') Audio.menuClick();
+        gameMode = 'campaign';
+        document.getElementById('mode-select').classList.add('hidden');
+        // Go directly to spellbook, then restore save on start
+        state = 'spellbook';
+        Spellbook.init((spells) => {
+            compiledSpells = spells;
+            Spellbook.hide();
+            state = 'campaign';
+            Campaign.restoreFromSave(compiledSpells);
+        });
+        Spellbook.show();
+    });
+
     // ── LOBBY ──
     function showLobby() {
         document.getElementById('lobby').classList.remove('hidden');
@@ -83,16 +106,16 @@
     }
 
     const netCallbacks = {
-        onMessage: (data) => {
+        onMessage: (data, fromPeerId) => {
             if (state === 'spellbook' && data.type === 'opponent-ready') {
                 Spellbook.updateStatus('Opponent is ready!');
                 checkBothReady(data);
             } else if (state === 'spellbook' && data.type === 'start-battle') {
                 startGame();
             } else if (state === 'battle') {
-                Battle.handleNetMessage(data);
+                Battle.handleNetMessage(data, fromPeerId);
             } else if (state === 'campaign') {
-                Campaign.handleNetMessage(data);
+                Campaign.handleNetMessage(data, fromPeerId);
             }
         },
         onConnected: () => {
@@ -108,6 +131,21 @@
         onDisconnected: () => {
             document.getElementById('roomStatus').textContent = 'Disconnected.';
             document.getElementById('roomStatus').style.color = '#ff4444';
+        },
+        onPeerJoin: (peerId) => {
+            console.log('[Main] Peer joined:', peerId);
+            if (state === 'battle') {
+                Battle.handleNetMessage({ type: 'peer-join', peerId }, peerId);
+            }
+            // Update player count display
+            const statusEl = document.getElementById('roomStatus');
+            if (statusEl) statusEl.textContent = 'Players: ' + (Network.getPeerCount() + 1);
+        },
+        onPeerLeave: (peerId) => {
+            console.log('[Main] Peer left:', peerId);
+            if (state === 'battle') {
+                Battle.handleNetMessage({ type: 'peer-leave', peerId }, peerId);
+            }
         },
     };
 

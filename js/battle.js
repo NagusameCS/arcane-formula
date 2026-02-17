@@ -23,7 +23,8 @@ const Battle = (() => {
     const MELEE_DURATION = 0.15;
     const MELEE_DAMAGE = 12;
 
-    let player, enemy;
+    let player;
+    let enemies = {}; // Map of peerId -> enemy object (supports 2+ players)
     let playerSpells = [];
     let playerCasts = [];
     let enemyCasts = [];
@@ -38,24 +39,44 @@ const Battle = (() => {
     let meleeAngle = 0;
     let meleeHit = false;
     let enemyMelees = []; // visual only
+    const ENEMY_COLORS = ['#ff4444','#44ff88','#ff88ff','#ffaa22','#22ddff','#cccc44','#ff6688'];
+
+    // Helper: get all enemy objects as array
+    function getEnemies() { return Object.values(enemies); }
+    // Helper: nearest enemy to player
+    function nearestEnemy() {
+        let best = null, bestDist = Infinity;
+        for (const e of getEnemies()) {
+            const dx = e.x - player.x, dy = e.y - player.y;
+            const d = dx*dx + dy*dy;
+            if (d < bestDist) { bestDist = d; best = e; }
+        }
+        return best;
+    }
+
+    function makeEnemy(peerId, x, y, colorIdx) {
+        return {
+            id: peerId, x: x, y: y,
+            hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
+            hitFlash: 0, burnout: 0, speed: 150,
+            dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
+            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
+            color: ENEMY_COLORS[colorIdx % ENEMY_COLORS.length],
+            colorLight: ENEMY_COLORS[colorIdx % ENEMY_COLORS.length] + '88',
+            alive: true,
+        };
+    }
 
     function init(compiledSpells) {
         ArconSystem.setBoundsMode('arena');
-        const isHost = Network.isHost();
         player = {
-            id: 'player', x: isHost ? 200 : 760, y: 270,
+            id: 'player', x: 200, y: 270,
             hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
             hitFlash: 0, burnout: 0, speed: 150,
             dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
             dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
         };
-        enemy = {
-            id: 'enemy', x: isHost ? 760 : 200, y: 270,
-            hp: HP_MAX, mana: MANA_MAX, hitRadius: 12,
-            hitFlash: 0, burnout: 0, speed: 150,
-            dashing: false, dashTimer: 0, dashCooldown: 0, dashDirX: 0, dashDirY: 0,
-            dashChainCount: 0, dashChainWindow: 0, invulnTimer: 0,
-        };
+        enemies = {};
 
         playerSpells = compiledSpells;
         playerCasts = [];
@@ -74,7 +95,6 @@ const Battle = (() => {
 
         // Instant mana return callbacks
         ArconSystem.onManaReturn('player', (count) => { player.mana = Math.min(MANA_MAX, player.mana + count); });
-        ArconSystem.onManaReturn('enemy', (count) => { enemy.mana = Math.min(MANA_MAX, enemy.mana + count); });
 
         document.getElementById('hud').classList.remove('hidden');
         document.getElementById('victory-screen').classList.add('hidden');
@@ -138,26 +158,30 @@ const Battle = (() => {
         if (player.dashCooldown > 0) player.dashCooldown -= dt;
         if (player.dashChainWindow > 0) player.dashChainWindow -= dt;
         if (player.invulnTimer > 0) player.invulnTimer -= dt;
-        if (enemy.invulnTimer > 0) enemy.invulnTimer -= dt;
+        for (const e of getEnemies()) { if (e.invulnTimer > 0) e.invulnTimer -= dt; }
 
         // ── Melee ──
         if (meleeCooldown > 0) meleeCooldown -= dt;
         if (meleeTimer > 0) {
             meleeTimer -= dt;
             if (!meleeHit) {
-                const dx = enemy.x - player.x, dy = enemy.y - player.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < MELEE_RANGE) {
-                    const angle = Math.atan2(dy, dx);
-                    let diff = angle - meleeAngle;
-                    while (diff > Math.PI) diff -= Math.PI * 2;
-                    while (diff < -Math.PI) diff += Math.PI * 2;
-                    if (Math.abs(diff) < MELEE_ARC / 2 && enemy.invulnTimer <= 0 && !enemy.dashing) {
-                        meleeHit = true;
-                        enemy.hp -= MELEE_DAMAGE;
-                        enemy.hitFlash = 0.3;
-                        if (typeof Audio !== 'undefined') Audio.hit();
-                        Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
+                for (const e of getEnemies()) {
+                    if (!e.alive) continue;
+                    const dx = e.x - player.x, dy = e.y - player.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < MELEE_RANGE) {
+                        const angle = Math.atan2(dy, dx);
+                        let diff = angle - meleeAngle;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        if (Math.abs(diff) < MELEE_ARC / 2 && e.invulnTimer <= 0 && !e.dashing) {
+                            meleeHit = true;
+                            e.hp -= MELEE_DAMAGE;
+                            e.hitFlash = 0.3;
+                            if (typeof Audio !== 'undefined') Audio.hit();
+                            Network.send({ type: 'state', x: player.x, y: player.y, hp: player.hp, mana: player.mana, dashing: player.dashing });
+                            break;
+                        }
                     }
                 }
             }
@@ -173,8 +197,10 @@ const Battle = (() => {
 
         if (player.burnout > 0) player.burnout -= dt;
         if (player.hitFlash > 0) player.hitFlash -= dt;
-        if (enemy.hitFlash > 0) enemy.hitFlash -= dt;
-        if (enemy.burnout > 0) enemy.burnout -= dt;
+        for (const e of getEnemies()) {
+            if (e.hitFlash > 0) e.hitFlash -= dt;
+            if (e.burnout > 0) e.burnout -= dt;
+        }
 
         // ── Player spell cooldowns ──
         for (const s of playerSpells) { if (s.currentCooldown > 0) s.currentCooldown -= dt; }
@@ -186,7 +212,7 @@ const Battle = (() => {
         enemyCasts = enemyCasts.filter(c => c.active);
 
         // ── Update arcons ──
-        ArconSystem.updateArcons(dt, [player, enemy]);
+        ArconSystem.updateArcons(dt, [player, ...getEnemies()]);
 
         // ── Ambient particles ──
         if (Math.random() < 0.3) {
@@ -214,8 +240,16 @@ const Battle = (() => {
         updateHUD();
 
         // ── Win condition ──
-        if (player.hp <= 0 && !gameOver) { gameOver = true; winner = 'enemy'; showVictory(); Network.send({ type: 'gameover', winner: 'player' }); }
-        else if (enemy.hp <= 0 && !gameOver) { gameOver = true; winner = 'player'; showVictory(); Network.send({ type: 'gameover', winner: 'enemy' }); }
+        if (player.hp <= 0 && !gameOver) {
+            gameOver = true; winner = 'enemy'; showVictory();
+            Network.send({ type: 'gameover', winner: 'player' });
+        } else if (!gameOver) {
+            const allDead = getEnemies().length > 0 && getEnemies().every(e => e.hp <= 0);
+            if (allDead) {
+                gameOver = true; winner = 'player'; showVictory();
+                Network.send({ type: 'gameover', winner: 'enemy' });
+            }
+        }
     }
 
     function castPlayerSpell(index) {
@@ -234,7 +268,8 @@ const Battle = (() => {
         player.mana -= spell.cost;
         spell.currentCooldown = spell.cooldown;
 
-        const cast = ArconSystem.castSpell(spell, player, enemy, mouse.x, mouse.y);
+        const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
+        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y);
         playerCasts.push(cast);
         if (typeof Audio !== 'undefined') Audio.cast();
 
@@ -284,47 +319,52 @@ const Battle = (() => {
         Network.send({ type: 'dash', dirX: player.dashDirX, dirY: player.dashDirY, chain: player.dashChainCount });
     }
 
-    // Handle messages from opponent
-    function handleNetMessage(data) {
+    // Handle messages from opponents
+    function handleNetMessage(data, fromPeerId) {
         if (!data || !data.type) return;
+        const pid = fromPeerId || 'enemy';
+
+        // Auto-create enemy on first message
+        if (!enemies[pid] && data.type === 'state') {
+            const idx = Object.keys(enemies).length;
+            const spawnX = 300 + idx * 200;
+            enemies[pid] = makeEnemy(pid, data.x || spawnX, data.y || 270, idx);
+            ArconSystem.onManaReturn(pid, (count) => {
+                if (enemies[pid]) enemies[pid].mana = Math.min(MANA_MAX, enemies[pid].mana + count);
+            });
+        }
+
+        const enemy = enemies[pid];
 
         switch (data.type) {
             case 'state':
-                enemy.x = data.x; enemy.y = data.y;
-                enemy.hp = data.hp; enemy.mana = data.mana;
-                enemy.dashing = data.dashing;
+                if (enemy) {
+                    enemy.x = data.x; enemy.y = data.y;
+                    enemy.hp = data.hp; enemy.mana = data.mana;
+                    enemy.dashing = data.dashing;
+                }
                 break;
 
             case 'cast':
-                // Opponent cast a spell — we simulate it from their perspective
-                // Build a simple compiled spell for the enemy arcons
                 try {
-                    const enemySpell = {
-                        cost: data.cost,
-                        xFn: null, yFn: null, emitDelayFn: null, widthFn: null,
-                    };
-                    // We re-use a basic beam pattern since we can't share compiled functions
-                    // The actual positions come from the network sender's formula
-                    // Better approach: send the formula expressions
-                    // For now, use directional beam as approximation
                     const aim = Math.atan2(data.cursorY - data.casterY, data.cursorX - data.casterX);
                     const cx = data.casterX, cy = data.casterY;
-                    enemySpell.xFn = (v) => cx + Math.cos(aim) * 300 * (v.t - v.i * 0.02);
-                    enemySpell.yFn = (v) => cy + Math.sin(aim) * 300 * (v.t - v.i * 0.02);
-                    enemySpell.emitDelayFn = (v) => v.i * 0.02;
-                    enemySpell.widthFn = (v) => 4;
-
+                    const enemySpell = {
+                        cost: data.cost,
+                        xFn: (v) => cx + Math.cos(aim) * 300 * (v.t - v.i * 0.02),
+                        yFn: (v) => cy + Math.sin(aim) * 300 * (v.t - v.i * 0.02),
+                        emitDelayFn: (v) => v.i * 0.02,
+                        widthFn: (v) => 4,
+                    };
                     const cast = ArconSystem.castSpell(enemySpell,
-                        { id: 'enemy', x: data.casterX, y: data.casterY },
-                        player,
-                        data.cursorX, data.cursorY
+                        { id: pid, x: data.casterX, y: data.casterY },
+                        player, data.cursorX, data.cursorY
                     );
                     enemyCasts.push(cast);
                 } catch(e) {}
                 break;
 
             case 'castfull':
-                // Opponent sends full formula expressions
                 try {
                     const s = {
                         cost: data.cost,
@@ -334,7 +374,7 @@ const Battle = (() => {
                         widthFn: Parser.compile(data.widthExpr),
                     };
                     const cast = ArconSystem.castSpell(s,
-                        { id:'enemy', x:data.casterX, y:data.casterY },
+                        { id: pid, x: data.casterX, y: data.casterY },
                         player, data.cursorX, data.cursorY
                     );
                     enemyCasts.push(cast);
@@ -342,16 +382,19 @@ const Battle = (() => {
                 break;
 
             case 'dash':
-                enemy.dashing = true;
-                enemy.dashDirX = data.dirX;
-                enemy.dashDirY = data.dirY;
-                enemy.dashTimer = DASH_DURATION;
-                setTimeout(() => { enemy.dashing = false; }, DASH_DURATION * 1000);
+                if (enemy) {
+                    enemy.dashing = true;
+                    enemy.dashDirX = data.dirX;
+                    enemy.dashDirY = data.dirY;
+                    enemy.dashTimer = DASH_DURATION;
+                    const dashEnemy = enemy;
+                    setTimeout(() => { dashEnemy.dashing = false; }, DASH_DURATION * 1000);
+                }
                 break;
 
             case 'melee':
                 // Show enemy melee visual
-                enemyMelees.push({ x: data.x, y: data.y, angle: data.angle, timer: MELEE_DURATION });
+                enemyMelees.push({ x: data.x, y: data.y, angle: data.angle, timer: MELEE_DURATION, peerId: pid });
                 // Damage check — if we're in their cone
                 if (!player.dashing && player.invulnTimer <= 0) {
                     const dx = player.x - data.x, dy = player.y - data.y;
@@ -368,6 +411,21 @@ const Battle = (() => {
                         }
                     }
                 }
+                break;
+
+            case 'peer-join':
+                // New peer joined mid-game
+                if (!enemies[data.peerId]) {
+                    const idx = Object.keys(enemies).length;
+                    enemies[data.peerId] = makeEnemy(data.peerId, 480, 270, idx);
+                    ArconSystem.onManaReturn(data.peerId, (count) => {
+                        if (enemies[data.peerId]) enemies[data.peerId].mana = Math.min(MANA_MAX, enemies[data.peerId].mana + count);
+                    });
+                }
+                break;
+
+            case 'peer-leave':
+                delete enemies[data.peerId];
                 break;
 
             case 'gameover':
@@ -390,7 +448,8 @@ const Battle = (() => {
         player.mana -= spell.cost;
         spell.currentCooldown = spell.cooldown;
 
-        const cast = ArconSystem.castSpell(spell, player, enemy, mouse.x, mouse.y);
+        const target = nearestEnemy() || { x: mouse.x, y: mouse.y, id: 'target' };
+        const cast = ArconSystem.castSpell(spell, player, target, mouse.x, mouse.y);
         playerCasts.push(cast);
         if (typeof Audio !== 'undefined') Audio.cast();
 
@@ -425,11 +484,16 @@ const Battle = (() => {
         const pLocked = ArconSystem.countActive('player') + ArconSystem.countPending(playerCasts, 'player');
         document.getElementById('player-mana-locked').style.width = `${(pLocked/MANA_MAX)*100}%`;
 
-        document.getElementById('enemy-hp').style.width = `${(enemy.hp/HP_MAX)*100}%`;
-        document.getElementById('enemy-hp-text').textContent = Math.ceil(enemy.hp);
-        document.getElementById('enemy-mana').style.width = `${(enemy.mana/MANA_MAX)*100}%`;
-        const eLocked = ArconSystem.countActive('enemy') + ArconSystem.countPending(enemyCasts, 'enemy');
-        document.getElementById('enemy-mana-locked').style.width = `${(eLocked/MANA_MAX)*100}%`;
+        // Show first enemy stats in the standard enemy bar (or average if multiple)
+        const eArr = getEnemies();
+        if (eArr.length > 0) {
+            const e0 = eArr[0];
+            document.getElementById('enemy-hp').style.width = `${(e0.hp/HP_MAX)*100}%`;
+            document.getElementById('enemy-hp-text').textContent = eArr.length > 1 ? `${Math.ceil(e0.hp)} (+${eArr.length - 1})` : Math.ceil(e0.hp);
+            document.getElementById('enemy-mana').style.width = `${(e0.mana/MANA_MAX)*100}%`;
+            const eLocked = ArconSystem.countActive(e0.id) + ArconSystem.countPending(enemyCasts, e0.id);
+            document.getElementById('enemy-mana-locked').style.width = `${(eLocked/MANA_MAX)*100}%`;
+        }
 
         for (let i = 0; i < playerSpells.length; i++) {
             const el = document.getElementById(`spell-hud-${i}`);
@@ -481,7 +545,9 @@ const Battle = (() => {
 
         ArconSystem.render(ctx);
         renderMage(ctx, player, '#4488ff', '#88bbff');
-        renderMage(ctx, enemy, '#ff4444', '#ff8877');
+        for (const e of getEnemies()) {
+            renderMage(ctx, e, e.color || '#ff4444', e.colorLight || '#ff8877');
+        }
 
         if (!gameOver) {
             ctx.globalAlpha = 0.12; ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
@@ -552,51 +618,134 @@ const Battle = (() => {
     function renderMage(ctx, mage, color, light) {
         const flash = mage.hitFlash > 0;
         const isDashing = mage.dashing;
+        const isMoving = mage === player ? (keys['w'] || keys['s'] || keys['a'] || keys['d'] || keys['arrowup'] || keys['arrowdown'] || keys['arrowleft'] || keys['arrowright']) : false;
+        const isMeleeing = mage === player ? (meleeTimer > 0) : (enemyMelees.length > 0);
+        const isHurt = mage.hitFlash > 0.1;
+        const t = performance.now() / 1000;
 
-        // Ghost trail when dashing (enhanced with afterimages)
+        // Animation state
+        let animState = 'idle';
+        if (isDashing) animState = 'dash';
+        else if (isHurt) animState = 'hurt';
+        else if (isMeleeing) animState = 'melee';
+        else if (isMoving) animState = 'walk';
+
+        // Frame timing
+        const walkBob = Math.sin(t * 10) * 2;
+        const idleBob = Math.sin(t * 2.5) * 1.5;
+        const breathe = Math.sin(t * 3) * 0.5;
+
+        // Ghost trail when dashing
         if (isDashing) {
             ctx.globalAlpha = 0.1;
             ctx.fillStyle = color;
             const stretchX = (mage.dashDirX || 0) * -25;
             const stretchY = (mage.dashDirY || 0) * -25;
-            // Afterimage 1
             ctx.fillRect(mage.x - 6 + stretchX, mage.y - 14 + stretchY, 12, 24);
-            // Afterimage 2
             ctx.globalAlpha = 0.05;
             ctx.fillRect(mage.x - 4 + stretchX * 2, mage.y - 10 + stretchY * 2, 8, 18);
             ctx.globalAlpha = 0.15;
             ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
         }
 
-        ctx.globalAlpha = isDashing ? 0.4 : 0.3;
-        ctx.fillStyle = '#000'; ctx.fillRect(mage.x - 8, mage.y + 8, 16, 4);
+        // Shadow
+        ctx.globalAlpha = isDashing ? 0.15 : 0.3;
+        ctx.fillStyle = '#000';
+        const shadowW = isDashing ? 10 : 14;
+        ctx.fillRect(mage.x - shadowW/2, mage.y + 8 + (animState === 'walk' ? Math.abs(walkBob) * 0.5 : 0), shadowW, 3);
         ctx.globalAlpha = isDashing ? 0.5 : 1;
 
+        // Calculate offsets based on animation state
+        let bodyOffY = 0, headOffY = 0, legLOff = 0, legROff = 0, armAngle = 0, bodyTilt = 0;
+
+        switch (animState) {
+            case 'idle':
+                bodyOffY = idleBob;
+                headOffY = idleBob * 0.7;
+                legLOff = 0; legROff = 0;
+                armAngle = Math.sin(t * 1.5) * 0.1;
+                break;
+            case 'walk':
+                bodyOffY = Math.abs(walkBob) * 0.5;
+                headOffY = Math.abs(walkBob) * 0.3;
+                legLOff = walkBob * 1.5;
+                legROff = -walkBob * 1.5;
+                armAngle = Math.sin(t * 10) * 0.4;
+                break;
+            case 'dash':
+                bodyOffY = -2;
+                headOffY = -3;
+                bodyTilt = (mage.dashDirX || 0) * 0.2;
+                break;
+            case 'melee': {
+                const prog = mage === player ? (1 - meleeTimer / MELEE_DURATION) : 0.5;
+                bodyOffY = -1;
+                armAngle = -1.5 + prog * 3;
+                bodyTilt = Math.sin(prog * Math.PI) * 0.15;
+                break;
+            }
+            case 'hurt':
+                bodyOffY = Math.sin(t * 30) * 2;
+                headOffY = Math.sin(t * 30 + 1) * 2;
+                break;
+        }
+
+        ctx.save();
+        ctx.translate(mage.x, mage.y + bodyOffY);
+        if (bodyTilt) ctx.rotate(bodyTilt);
+
+        // Legs (animated separately)
         ctx.fillStyle = flash ? '#fff' : color;
-        ctx.fillRect(mage.x - 4, mage.y - 14, 8, 8); // head
-        ctx.fillRect(mage.x - 5, mage.y - 6, 10, 10); // body
-        ctx.fillRect(mage.x - 5, mage.y + 4, 4, 6); // legs
-        ctx.fillRect(mage.x + 1, mage.y + 4, 4, 6);
+        ctx.fillRect(-5, 4 + legLOff, 4, 6);  // left leg
+        ctx.fillRect(1, 4 + legROff, 4, 6);    // right leg
 
+        // Body
+        ctx.fillRect(-5, -6 + breathe, 10, 10);
+
+        // Head
+        const headY = -14 + headOffY;
+        ctx.fillRect(-4, headY, 8, 8);
+
+        // Hat
         if (!flash) ctx.fillStyle = light;
-        ctx.fillRect(mage.x - 6, mage.y - 16, 12, 2); // hat brim
-        ctx.fillRect(mage.x - 3, mage.y - 20, 6, 4);
-        ctx.fillRect(mage.x - 1, mage.y - 22, 2, 2);
+        ctx.fillRect(-6, headY - 2, 12, 2);      // brim
+        ctx.fillRect(-3, headY - 6, 6, 4);        // crown
+        ctx.fillRect(-1, headY - 8, 2, 2);        // tip
 
+        // Wand arm (rotates based on animation)
+        ctx.save();
+        ctx.translate(5, -2);
+        ctx.rotate(armAngle);
         if (!flash) ctx.fillStyle = '#ffd700';
-        ctx.fillRect(mage.x + 5, mage.y - 4, 2, 12); // wand
-        ctx.globalAlpha = (mage.dashing ? .3 : .5) + Math.sin(performance.now() / 200) * .3;
+        ctx.fillRect(0, -2, 2, 12);              // wand shaft
+        ctx.globalAlpha = (isDashing ? 0.3 : 0.5) + Math.sin(t * 5) * 0.3;
         ctx.fillStyle = flash ? '#fff' : '#ffd700';
-        ctx.fillRect(mage.x + 4, mage.y - 6, 4, 4);
-        ctx.globalAlpha = 1;
+        ctx.fillRect(-1, -4, 4, 4);              // wand orb
+        ctx.globalAlpha = isDashing ? 0.5 : 1;
+        ctx.restore();
 
+        // Eyes (with blink animation)
+        const blinkPhase = t % 4;
+        const eyeH = (blinkPhase > 3.85 && blinkPhase < 3.95) ? 1 : 2;  // blink every ~4s
         ctx.fillStyle = '#fff';
-        ctx.fillRect(mage.x - 2, mage.y - 12, 2, 2);
-        ctx.fillRect(mage.x + 1, mage.y - 12, 2, 2);
+        ctx.fillRect(-2, headY + 2, 2, eyeH);
+        ctx.fillRect(1, headY + 2, 2, eyeH);
+
+        // Eye pupils follow cursor/enemy direction
+        if (eyeH > 1) {
+            const lookTarget = mage === player ? mouse : (nearestEnemy() || player);
+            const lookDx = lookTarget.x - mage.x;
+            const lookOff = lookDx > 0 ? 1 : 0;
+            ctx.fillStyle = color;
+            ctx.fillRect(-2 + lookOff, headY + 2, 1, 1);
+            ctx.fillRect(1 + lookOff, headY + 2, 1, 1);
+        }
+
+        ctx.restore();
 
         // Invuln shimmer
         if (mage.invulnTimer > 0) {
-            ctx.globalAlpha = 0.15 + Math.sin(performance.now() / 50) * 0.1;
+            ctx.globalAlpha = 0.15 + Math.sin(t * 50) * 0.1;
             ctx.fillStyle = '#88ccff';
             ctx.fillRect(mage.x - 8, mage.y - 16, 16, 28);
         }

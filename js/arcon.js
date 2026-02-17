@@ -40,10 +40,20 @@ const ArconSystem = (() => {
         const aim = Math.atan2(cursorY - caster.y, cursorX - caster.x);
         const dist = Math.sqrt((cursorX - caster.x) ** 2 + (cursorY - caster.y) ** 2);
 
+        // Targeting range limit: clamp enemy target to max range of 350px
+        const MAX_TARGET_RANGE = 350;
+        let targetX = target.x, targetY = target.y;
+        const tDist = Math.sqrt((target.x - caster.x) ** 2 + (target.y - caster.y) ** 2);
+        if (tDist > MAX_TARGET_RANGE) {
+            const tAngle = Math.atan2(target.y - caster.y, target.x - caster.x);
+            targetX = caster.x + Math.cos(tAngle) * MAX_TARGET_RANGE;
+            targetY = caster.y + Math.sin(tAngle) * MAX_TARGET_RANGE;
+        }
+
         const castVars = {
             'player.x': caster.x, 'player.y': caster.y,
             'cursor.x': cursorX, 'cursor.y': cursorY,
-            'enemy.x': target.x, 'enemy.y': target.y,
+            'enemy.x': targetX, 'enemy.y': targetY,
             'map.w': 960, 'map.h': 540,
             N, aim, dist, 'pi': Math.PI,
         };

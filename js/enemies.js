@@ -23,6 +23,12 @@ const Enemies = (() => {
         skeleton:      { hp: 30, speed: 60,  size: 10, color: '#d4c5a0', dmg: 10, behavior: 'chase',  xp: 15 },
         wraith:        { hp: 25, speed: 100, size: 10, color: '#9b59b6', dmg: 12, behavior: 'strafe', xp: 25 },
         gargoyle:      { hp: 80, speed: 40,  size: 16, color: '#4a4550', dmg: 18, behavior: 'guard',  xp: 40 },
+        // New enemy types with advanced behaviors
+        blink_imp:     { hp: 20, speed: 90,  size: 8,  color: '#bb44ff', dmg: 10, behavior: 'teleport', xp: 20 },
+        mirror_knight: { hp: 60, speed: 55,  size: 14, color: '#c0c0c0', dmg: 14, behavior: 'dodge',   xp: 45 },
+        necro_acolyte: { hp: 35, speed: 45,  size: 10, color: '#44005a', dmg: 8,  behavior: 'summon',  xp: 35 },
+        charger:       { hp: 55, speed: 60,  size: 14, color: '#cc6600', dmg: 18, behavior: 'charge',  xp: 30 },
+        shaman:        { hp: 40, speed: 40,  size: 12, color: '#ff8844', dmg: 6,  behavior: 'healer',  xp: 40 },
     };
 
     const BOSSES = {
@@ -55,6 +61,20 @@ const Enemies = (() => {
                         hp: Math.floor(bossData.hp * difficulty),
                         behavior: 'boss',
                     }, sp.x, sp.y, true));
+                }
+            } else if (sp.type === 'miniboss') {
+                const mbData = Dungeon.getMinibossData(dungeon.theme, difficulty);
+                if (mbData) {
+                    const mb = createEnemy(mbData.name, {
+                        ...mbData,
+                        hp: mbData.hp,
+                        dmg: mbData.dmg,
+                        phases: 2,
+                    }, sp.x, sp.y, false);
+                    mb.isMiniboss = true;
+                    mb.aggroRange = 200;
+                    mb.attackRange = 60;
+                    enemies.push(mb);
                 }
             } else {
                 const typeName = theme.enemies[Math.floor(Math.random() * theme.enemies.length)];
@@ -208,6 +228,126 @@ const Enemies = (() => {
                     // Stationary, handled by ranged attack below
                     break;
 
+                case 'teleport':
+                    // Blink imp: teleport near player every few seconds
+                    if (e.aiTimer <= 0) {
+                        e.aiTimer = 2.0 + Math.random() * 1.5;
+                        const teleAngle = Math.random() * Math.PI * 2;
+                        const teleDist = 40 + Math.random() * 60;
+                        const tx = target.x + Math.cos(teleAngle) * teleDist;
+                        const ty = target.y + Math.sin(teleAngle) * teleDist;
+                        if (Dungeon.isWalkable(dungeon, tx, ty)) {
+                            // Poof particles at old position
+                            for (let p = 0; p < 6; p++) {
+                                effects.push({ type: 'projectile', x: e.x, y: e.y,
+                                    vx: (Math.random()-0.5)*80, vy: (Math.random()-0.5)*80,
+                                    dmg: 0, life: 0.3, color: e.color, size: 3, owner: 'none' });
+                            }
+                            e.x = tx; e.y = ty;
+                            // Poof at new position
+                            for (let p = 0; p < 4; p++) {
+                                effects.push({ type: 'projectile', x: e.x, y: e.y,
+                                    vx: (Math.random()-0.5)*60, vy: (Math.random()-0.5)*60,
+                                    dmg: 0, life: 0.3, color: '#ffffff', size: 2, owner: 'none' });
+                            }
+                        }
+                    } else if (closestDist > 30) {
+                        moveEnemy(e, ndx, ndy, dt, dungeon);
+                    }
+                    break;
+
+                case 'dodge':
+                    // Mirror knight: dodge sideways when player is close, strafe otherwise
+                    if (closestDist < 60 && e.aiTimer <= 0) {
+                        e.aiTimer = 0.6 + Math.random() * 0.4;
+                        // Quick dodge perpendicular
+                        const dodgeAngle = Math.atan2(ndy, ndx) + (Math.random() > 0.5 ? Math.PI/2 : -Math.PI/2);
+                        const dodgeDist = 40 + Math.random() * 20;
+                        const dodgeX = e.x + Math.cos(dodgeAngle) * dodgeDist;
+                        const dodgeY = e.y + Math.sin(dodgeAngle) * dodgeDist;
+                        if (Dungeon.isWalkable(dungeon, dodgeX, dodgeY)) {
+                            e.x = dodgeX; e.y = dodgeY;
+                        }
+                    } else if (closestDist > 80) {
+                        moveEnemy(e, ndx, ndy, dt, dungeon);
+                    } else {
+                        // Circle strafe
+                        const perpX2 = -ndy, perpY2 = ndx;
+                        moveEnemy(e, perpX2, perpY2, dt, dungeon);
+                    }
+                    break;
+
+                case 'summon':
+                    // Necro acolyte: stays back and summons minions
+                    if (closestDist < 80) {
+                        moveEnemy(e, -ndx, -ndy, dt, dungeon); // Run away
+                    } else if (e.aiTimer <= 0 && enemies.length < 25) {
+                        e.aiTimer = 4 + Math.random() * 3;
+                        // Summon a scarab near self
+                        const sa = Math.random() * Math.PI * 2;
+                        const sx = e.x + Math.cos(sa) * 20;
+                        const sy = e.y + Math.sin(sa) * 20;
+                        if (Dungeon.isWalkable(dungeon, sx, sy)) {
+                            const minion = createEnemy('scarab', {
+                                ...TYPES.scarab, hp: Math.floor(TYPES.scarab.hp * 0.7),
+                            }, 0, 0, false);
+                            minion.x = sx; minion.y = sy;
+                            minion.spawnTimer = 0.3;
+                            minion.aggro = true;
+                            enemies.push(minion);
+                            for (let p = 0; p < 5; p++) {
+                                effects.push({ type: 'projectile', x: sx, y: sy,
+                                    vx: (Math.random()-0.5)*40, vy: -Math.random()*40,
+                                    dmg: 0, life: 0.4, color: '#44005a', size: 2, owner: 'none' });
+                            }
+                        }
+                    }
+                    break;
+
+                case 'charge':
+                    // Charger: picks a direction and charges fast, then pauses
+                    if (e.aiTimer <= 0 && closestDist < 200) {
+                        e.aiTimer = 2.5 + Math.random();
+                        // Charge in direction of player
+                        e.aiDirX = ndx; e.aiDirY = ndy;
+                        // Do 5 fast steps
+                        for (let step = 0; step < 5; step++) {
+                            const cx = e.x + e.aiDirX * 16;
+                            const cy = e.y + e.aiDirY * 16;
+                            if (Dungeon.isWalkable(dungeon, cx, cy)) {
+                                e.x = cx; e.y = cy;
+                            } else break;
+                        }
+                        addShake(3, 0.15);
+                    } else if (closestDist > 120) {
+                        moveEnemy(e, ndx, ndy, dt, dungeon);
+                    }
+                    break;
+
+                case 'healer':
+                    // Shaman: heals nearby allies, stays back
+                    if (closestDist < 100) {
+                        moveEnemy(e, -ndx * 0.5, -ndy * 0.5, dt, dungeon);
+                    }
+                    if (e.aiTimer <= 0) {
+                        e.aiTimer = 3 + Math.random() * 2;
+                        // Heal nearby wounded allies
+                        for (const ally of enemies) {
+                            if (ally === e || !ally.alive) continue;
+                            const adx = ally.x - e.x, ady = ally.y - e.y;
+                            if (Math.sqrt(adx*adx + ady*ady) < 100 && ally.hp < ally.maxHp) {
+                                ally.hp = Math.min(ally.maxHp, ally.hp + Math.floor(ally.maxHp * 0.15));
+                                // Heal particles
+                                for (let p = 0; p < 3; p++) {
+                                    effects.push({ type: 'projectile', x: ally.x, y: ally.y,
+                                        vx: (Math.random()-0.5)*20, vy: -Math.random()*30,
+                                        dmg: 0, life: 0.5, color: '#44ff88', size: 2, owner: 'none' });
+                                }
+                            }
+                        }
+                    }
+                    break;
+
                 case 'boss':
                     updateBoss(e, target, dt, dungeon);
                     break;
@@ -223,10 +363,20 @@ const Enemies = (() => {
                             p.hp -= e.dmg;
                             p.hitFlash = 0.2;
                             e.attackCd = 0.8;
-                            // Knockback
+                            // Knockback with walkability check
                             const kbLen = Math.sqrt(pdx * pdx + pdy * pdy) || 1;
-                            p.x += (pdx / kbLen) * 30;
-                            p.y += (pdy / kbLen) * 30;
+                            const kbX = p.x + (pdx / kbLen) * 30;
+                            const kbY = p.y + (pdy / kbLen) * 30;
+                            if (Dungeon.isWalkableBox(dungeon, kbX, kbY, 6)) {
+                                p.x = kbX; p.y = kbY;
+                            } else if (Dungeon.isWalkableBox(dungeon, kbX, p.y, 6)) {
+                                p.x = kbX;
+                            } else if (Dungeon.isWalkableBox(dungeon, p.x, kbY, 6)) {
+                                p.y = kbY;
+                            }
+                            // Final safety clamp
+                            const bounded = Dungeon.enforceWorldBounds(p.x, p.y, dungeon);
+                            p.x = bounded.x; p.y = bounded.y;
                             addShake(4, 0.15);
                             if (typeof Audio !== 'undefined') Audio.playerHurt();
                         }
@@ -284,6 +434,48 @@ const Enemies = (() => {
         }
     }
 
+    // Boss spell casting from the library
+    let bossSpellCache = {};
+    function getBossSpells() {
+        if (Object.keys(bossSpellCache).length > 0) return bossSpellCache;
+        if (typeof SpellLibrary === 'undefined') return {};
+        const lib = SpellLibrary.getAll();
+        // Pick a variety of spells for bosses to use
+        const spellNames = ['Bolt', 'Spray', 'Wave', 'Spiral', 'Seeker', 'Shield', 'Burst', 'Vortex',
+                            'Nova', 'Swarm', 'Flak', 'Icicle', 'Railgun', 'Repulse', 'Tesla', 'Supernova'];
+        for (const name of spellNames) {
+            const found = lib.find(s => s.name === name);
+            if (found) {
+                try {
+                    bossSpellCache[name] = {
+                        cost: found.cost,
+                        xFn: Parser.compile(found.xExpr),
+                        yFn: Parser.compile(found.yExpr),
+                        emitDelayFn: Parser.compile(found.emitExpr),
+                        widthFn: Parser.compile(found.widthExpr || '4'),
+                    };
+                } catch(e) {}
+            }
+        }
+        return bossSpellCache;
+    }
+
+    function bossCastSpell(boss, target, spellName) {
+        const spells = getBossSpells();
+        const spell = spells[spellName];
+        if (!spell) return;
+        try {
+            const cast = ArconSystem.castSpell(spell,
+                { id: 'boss_' + boss.name, x: boss.x, y: boss.y },
+                target, target.x, target.y
+            );
+            // Store boss casts in effects as a special type
+            if (cast && cast.arcons) {
+                // ArconSystem handles them, we just need to track them
+            }
+        } catch(e) {}
+    }
+
     function updateBoss(e, target, dt, dungeon) {
         const dx = target.x - e.x, dy = target.y - e.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
@@ -292,7 +484,8 @@ const Enemies = (() => {
         // Phase transitions
         const hpPct = e.hp / e.maxHp;
         const oldPhase = e.phase;
-        if (e.phaseMax >= 3 && hpPct < 0.33) e.phase = 3;
+        if (e.phaseMax >= 4 && hpPct < 0.2) e.phase = 4;
+        else if (e.phaseMax >= 3 && hpPct < 0.33) e.phase = 3;
         else if (e.phaseMax >= 2 && hpPct < 0.66) e.phase = 2;
 
         // Phase transition effects
@@ -320,38 +513,88 @@ const Enemies = (() => {
 
         if (e.phase === 1) {
             moveEnemy(e, ndx, ndy, dt, dungeon);
+            // Phase 1: Occasional spell cast
+            if (e.aiTimer <= 0 && closestDist < 250) {
+                e.aiTimer = 2.0 + Math.random();
+                const p1Spells = ['Bolt', 'Spray', 'Seeker'];
+                bossCastSpell(e, target, p1Spells[Math.floor(Math.random() * p1Spells.length)]);
+            }
         } else if (e.phase === 2) {
             moveEnemy(e, ndx * 1.5, ndy * 1.5, dt, dungeon);
             if (e.aiTimer <= 0) {
-                e.aiTimer = 1.2;
-                for (let a = 0; a < 8; a++) {
-                    const angle = (a / 8) * Math.PI * 2;
-                    effects.push({
-                        type: 'projectile',
-                        x: e.x, y: e.y,
-                        vx: Math.cos(angle) * 120, vy: Math.sin(angle) * 120,
-                        dmg: Math.ceil(e.dmg * 0.3), life: 2.5,
-                        color: e.color, size: 5, owner: 'enemy',
-                    });
+                e.aiTimer = 1.0 + Math.random() * 0.5;
+                // Phase 2: Stronger spells + projectile ring
+                if (Math.random() < 0.4) {
+                    const p2Spells = ['Wave', 'Spiral', 'Flak', 'Tesla'];
+                    bossCastSpell(e, target, p2Spells[Math.floor(Math.random() * p2Spells.length)]);
+                } else {
+                    for (let a = 0; a < 8; a++) {
+                        const angle = (a / 8) * Math.PI * 2;
+                        effects.push({
+                            type: 'projectile', x: e.x, y: e.y,
+                            vx: Math.cos(angle) * 120, vy: Math.sin(angle) * 120,
+                            dmg: Math.ceil(e.dmg * 0.3), life: 2.5,
+                            color: e.color, size: 5, owner: 'enemy',
+                        });
+                    }
                 }
                 addShake(3, 0.15);
             }
         } else if (e.phase === 3) {
             moveEnemy(e, ndx * 2, ndy * 2, dt, dungeon);
             if (e.aiTimer <= 0) {
-                e.aiTimer = 0.6;
-                const baseAngle = performance.now() * 0.002;
-                for (let a = 0; a < 12; a++) {
-                    const angle = (a / 12) * Math.PI * 2 + baseAngle;
-                    effects.push({
-                        type: 'projectile',
-                        x: e.x, y: e.y,
-                        vx: Math.cos(angle) * 160, vy: Math.sin(angle) * 160,
-                        dmg: Math.ceil(e.dmg * 0.4), life: 2,
-                        color: e.color, size: 4, owner: 'enemy',
-                    });
+                e.aiTimer = 0.5 + Math.random() * 0.3;
+                // Phase 3: Powerful spells, dense projectiles, teleport
+                const roll = Math.random();
+                if (roll < 0.3) {
+                    const p3Spells = ['Nova', 'Supernova', 'Vortex', 'Repulse', 'Railgun'];
+                    bossCastSpell(e, target, p3Spells[Math.floor(Math.random() * p3Spells.length)]);
+                } else if (roll < 0.5) {
+                    // Teleport near player
+                    const teleAngle = Math.random() * Math.PI * 2;
+                    const tx = target.x + Math.cos(teleAngle) * 80;
+                    const ty = target.y + Math.sin(teleAngle) * 80;
+                    if (Dungeon.isWalkable(dungeon, tx, ty)) {
+                        e.x = tx; e.y = ty;
+                        addShake(5, 0.2);
+                    }
+                } else {
+                    const baseAngle = performance.now() * 0.002;
+                    for (let a = 0; a < 12; a++) {
+                        const angle = (a / 12) * Math.PI * 2 + baseAngle;
+                        effects.push({
+                            type: 'projectile', x: e.x, y: e.y,
+                            vx: Math.cos(angle) * 160, vy: Math.sin(angle) * 160,
+                            dmg: Math.ceil(e.dmg * 0.4), life: 2,
+                            color: e.color, size: 4, owner: 'enemy',
+                        });
+                    }
                 }
                 addShake(5, 0.25);
+            }
+        }
+
+        // Phase 4 (Lich King only)
+        if (e.phase >= 4) {
+            moveEnemy(e, ndx * 2.5, ndy * 2.5, dt, dungeon);
+            if (e.aiTimer <= 0) {
+                e.aiTimer = 0.3 + Math.random() * 0.2;
+                // Absolute chaos: multiple spells + summons
+                const chaoSpells = ['Swarm', 'Supernova', 'Tesla', 'Nova', 'Spiral'];
+                bossCastSpell(e, target, chaoSpells[Math.floor(Math.random() * chaoSpells.length)]);
+                // Summon minions occasionally
+                if (Math.random() < 0.15 && enemies.length < 20) {
+                    const sa = Math.random() * Math.PI * 2;
+                    const minion = createEnemy('skeleton', {
+                        ...TYPES.skeleton, hp: TYPES.skeleton.hp * 2,
+                    }, 0, 0, false);
+                    minion.x = e.x + Math.cos(sa) * 30;
+                    minion.y = e.y + Math.sin(sa) * 30;
+                    minion.spawnTimer = 0.2;
+                    minion.aggro = true;
+                    enemies.push(minion);
+                }
+                addShake(6, 0.3);
             }
         }
     }

@@ -49,6 +49,8 @@ const Campaign = (() => {
     let meleeAngle = 0;
     let meleeHitEnemies = []; // Already hit this swing
     let allyMelees = []; // { x, y, angle, timer }
+    let lastSpellCast = -1; // Track spell spam
+    let spamCount = 0;
 
     // Level & Skill system (persists across floors)
     let playerLevel = 1;
@@ -64,7 +66,59 @@ const Campaign = (() => {
     let showingLevelUp = false;
     let levelUpQueue = 0; // Pending level-ups to show
 
+    // Co-op voting system
+    let coopVotes = {}; // { peerId: skillKey }
+    let myVote = null;
+    let voteTimeout = null;
+    let isCoopMode = false; // Set to true when allies exist
+
     function xpForLevel(lvl) { return Math.floor(40 + lvl * 25 + lvl * lvl * 5); }
+
+    // ── SAVE / LOAD (checkpoints) ──
+    function saveCheckpoint() {
+        try {
+            const data = {
+                floor: currentFloor,
+                level: playerLevel,
+                xp: playerXP,
+                skillPoints: skillPoints,
+                skills: { ...skills },
+                timestamp: Date.now(),
+            };
+            localStorage.setItem('arcform-campaign-save', JSON.stringify(data));
+        } catch(e) { /* localStorage not available */ }
+    }
+
+    function loadCheckpoint() {
+        try {
+            const raw = localStorage.getItem('arcform-campaign-save');
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch(e) { return null; }
+    }
+
+    function clearCheckpoint() {
+        try { localStorage.removeItem('arcform-campaign-save'); } catch(e) {}
+    }
+
+    function hasSave() {
+        return loadCheckpoint() !== null;
+    }
+
+    function restoreFromSave(compiledSpellsArr) {
+        const save = loadCheckpoint();
+        if (!save) return false;
+        playerLevel = save.level || 1;
+        playerXP = save.xp || 0;
+        skillPoints = save.skillPoints || 0;
+        if (save.skills) {
+            for (const k in save.skills) {
+                if (skills.hasOwnProperty(k)) skills[k] = save.skills[k];
+            }
+        }
+        init(compiledSpellsArr, save.floor || 0);
+        return true;
+    }
 
     function getMaxHP() { return BASE_HP + skills.vitality * 25; }
     function getMaxMana() { return BASE_MANA + skills.arcana * 15; }
@@ -125,6 +179,8 @@ const Campaign = (() => {
         meleeCooldown = 0;
         meleeHitEnemies = [];
         allyMelees = [];
+        lastSpellCast = -1;
+        spamCount = 0;
         screenShake = { x: 0, y: 0 };
         hitFreeze = 0;
         flashAlpha = 0;
@@ -355,6 +411,18 @@ const Campaign = (() => {
             Dungeon.preRender(currentDungeon);
             if (typeof Audio !== 'undefined') Audio.chest();
         }
+        if (tile === Dungeon.TILE.SWITCH_OFF) {
+            const toggled = Dungeon.toggleSwitch(currentDungeon, ptx, pty);
+            if (toggled) {
+                flashAlpha = 0.25;
+                screenShake = { x: 4, y: 2 };
+                if (typeof Audio !== 'undefined') Audio.chest(); // reuse chest sound for switch
+                // Broadcast to co-op allies
+                if (Network && Network.isHost()) {
+                    Network.send({ type: 'campaign-switch', tx: ptx, ty: pty });
+                }
+            }
+        }
         if (tile === Dungeon.TILE.TRAP) {
             currentDungeon.map[pty][ptx] = Dungeon.TILE.FLOOR;
             if (player.invulnTimer <= 0 && !player.dashing) {
@@ -367,6 +435,7 @@ const Campaign = (() => {
         }
         if (tile === Dungeon.TILE.STAIRS_DOWN && floorCleared) {
             if (typeof Audio !== 'undefined') Audio.stairsDown();
+            saveCheckpoint(); // Checkpoint before next floor
             init(playerSpells, currentFloor + 1);
             return;
         }
@@ -475,6 +544,12 @@ const Campaign = (() => {
     function addXP(amount) {
         xpGained += amount;
         playerXP += amount;
+
+        // Share XP with allies in co-op
+        if (Network.isConnected()) {
+            Network.send({ type: 'campaign-xp', amount });
+        }
+
         while (playerXP >= xpForLevel(playerLevel)) {
             playerXP -= xpForLevel(playerLevel);
             playerLevel++;
@@ -543,7 +618,15 @@ const Campaign = (() => {
         if (player.mana < spell.cost) return;
 
         player.mana -= spell.cost;
-        spell.currentCooldown = spell.cooldown;
+
+        // Spam penalty: casting same spell repeatedly increases cooldown
+        if (index === lastSpellCast) {
+            spamCount = Math.min(spamCount + 1, 5);
+        } else {
+            spamCount = 0;
+        }
+        lastSpellCast = index;
+        spell.currentCooldown = spell.cooldown * (1 + spamCount * 0.3);
 
         const world = Dungeon.screenToWorld(mouse.x, mouse.y);
 
@@ -616,21 +699,22 @@ const Campaign = (() => {
     }
 
     // ── NETWORK ──
-    function handleNetMessage(data) {
+    function handleNetMessage(data, fromPeerId) {
         if (!data || !data.type) return;
+        const pid = fromPeerId || 'ally';
 
         switch (data.type) {
             case 'campaign-state': {
-                let ally = allies.find(a => a.id === 'ally');
+                let ally = allies.find(a => a.id === pid);
                 if (!ally) {
                     ally = {
-                        id: 'ally', hp: getMaxHP(), maxHp: getMaxHP(),
+                        id: pid, hp: getMaxHP(), maxHp: getMaxHP(),
                         mana: getMaxMana(), hitRadius: 10,
                         x: data.x, y: data.y, hitFlash: 0, dashing: data.dashing,
                         level: data.level || 1,
                     };
                     allies.push(ally);
-                    ArconSystem.onManaReturn('ally', (count) => {
+                    ArconSystem.onManaReturn(pid, (count) => {
                         ally.mana = Math.min(getMaxMana(), ally.mana + count);
                     });
                 }
@@ -650,7 +734,7 @@ const Campaign = (() => {
                         emitDelayFn: (v) => v.i * 0.02, widthFn: () => 4,
                     };
                     const cast = ArconSystem.castSpell(s,
-                        { id: 'ally', x: data.casterX, y: data.casterY },
+                        { id: pid, x: data.casterX, y: data.casterY },
                         { id: 'target', x: data.cursorX, y: data.cursorY },
                         data.cursorX, data.cursorY
                     );
@@ -659,7 +743,7 @@ const Campaign = (() => {
                 break;
             }
             case 'campaign-dash': {
-                let ally = allies.find(a => a.id === 'ally');
+                let ally = allies.find(a => a.id === pid);
                 if (ally) {
                     ally.dashing = true;
                     setTimeout(() => { if (ally) ally.dashing = false; }, DASH_DURATION * 1000);
@@ -679,6 +763,41 @@ const Campaign = (() => {
                     if (typeof Cutscene !== 'undefined') {
                         Cutscene.startBossIntro(data.boss, () => {});
                     }
+                }
+                break;
+            }
+            case 'campaign-xp': {
+                // Receive shared XP from ally (don't re-broadcast)
+                xpGained += data.amount;
+                playerXP += data.amount;
+                while (playerXP >= xpForLevel(playerLevel)) {
+                    playerXP -= xpForLevel(playerLevel);
+                    playerLevel++;
+                    skillPoints++;
+                    levelUpQueue++;
+                    if (typeof Audio !== 'undefined') Audio.levelUp();
+                    player.maxHp = getMaxHP();
+                    player.hp = player.maxHp;
+                    player.mana = getMaxMana();
+                    player.speed = getSpeed();
+                    flashAlpha = 0.4;
+                }
+                break;
+            }
+            case 'campaign-vote': {
+                // Ally voted for a skill
+                coopVotes[pid] = data.skill;
+                updateVoteDisplay();
+                checkVoteConsensus();
+                break;
+            }
+            case 'campaign-switch': {
+                // Ally toggled a puzzle switch
+                if (currentDungeon) {
+                    Dungeon.toggleSwitch(currentDungeon, data.tx, data.ty);
+                    flashAlpha = 0.2;
+                    screenShake = { x: 3, y: 2 };
+                    if (typeof Audio !== 'undefined') Audio.chest();
                 }
                 break;
             }
@@ -900,8 +1019,12 @@ const Campaign = (() => {
         ctx.restore();
     }
 
-    // ── SKILL POINT ALLOCATION UI ──
+    // ── SKILL POINT ALLOCATION UI (with co-op voting) ──
     function showLevelUpUI() {
+        isCoopMode = Network.isConnected() && allies.length > 0;
+        coopVotes = {};
+        myVote = null;
+
         // Create overlay
         let overlay = document.getElementById('levelup-overlay');
         if (!overlay) {
@@ -914,6 +1037,7 @@ const Campaign = (() => {
                     <h2 class="levelup-title">LEVEL UP</h2>
                     <div class="levelup-level" id="levelup-level"></div>
                     <p class="levelup-sub">Choose a stat to improve</p>
+                    <div id="vote-status" style="color:#ffd700;font-size:11px;margin-bottom:6px;display:none;"></div>
                     <div class="levelup-skills" id="levelup-skills"></div>
                     <button class="btn-gold levelup-done" id="levelup-done">CONTINUE</button>
                 </div>
@@ -923,17 +1047,100 @@ const Campaign = (() => {
         overlay.classList.remove('hidden');
 
         document.getElementById('levelup-level').textContent = 'LEVEL ' + playerLevel;
+        const voteStatus = document.getElementById('vote-status');
+        if (isCoopMode) {
+            voteStatus.style.display = 'block';
+            voteStatus.textContent = 'Co-op: Vote on stat upgrade! Majority wins.';
+        } else {
+            voteStatus.style.display = 'none';
+        }
         rebuildSkillButtons();
 
         document.getElementById('levelup-done').onclick = () => {
+            if (isCoopMode && !myVote) return; // Must vote in co-op
             levelUpQueue--;
             if (levelUpQueue > 0) {
+                coopVotes = {};
+                myVote = null;
                 rebuildSkillButtons();
             } else {
                 overlay.classList.add('hidden');
                 showingLevelUp = false;
             }
         };
+
+        // Auto-close vote after 15s in co-op
+        if (isCoopMode) {
+            if (voteTimeout) clearTimeout(voteTimeout);
+            voteTimeout = setTimeout(() => {
+                if (showingLevelUp && !myVote) {
+                    // Auto-vote random
+                    const keys = Object.keys(skills);
+                    myVote = keys[Math.floor(Math.random() * keys.length)];
+                    coopVotes['self'] = myVote;
+                    Network.send({ type: 'campaign-vote', skill: myVote });
+                    checkVoteConsensus();
+                }
+            }, 15000);
+        }
+    }
+
+    function updateVoteDisplay() {
+        const voteStatus = document.getElementById('vote-status');
+        if (!voteStatus || !isCoopMode) return;
+        const totalPlayers = allies.length + 1;
+        const totalVotes = Object.keys(coopVotes).length + (myVote ? 1 : 0);
+        const voteCounts = {};
+        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
+        for (const v of Object.values(coopVotes)) {
+            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        }
+        const voteStrs = Object.entries(voteCounts).map(([k, v]) => k.toUpperCase() + ':' + v).join(' ');
+        voteStatus.textContent = `Votes (${totalVotes}/${totalPlayers}): ${voteStrs || 'none yet'}`;
+        rebuildSkillButtons();
+    }
+
+    function checkVoteConsensus() {
+        if (!isCoopMode) return;
+        const totalPlayers = allies.length + 1;
+        const totalVotes = Object.keys(coopVotes).length + (myVote ? 1 : 0);
+        if (totalVotes < totalPlayers) return; // Wait for all
+
+        // Count votes
+        const voteCounts = {};
+        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
+        for (const v of Object.values(coopVotes)) {
+            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        }
+
+        // Find winner (highest votes, tie = random among tied)
+        let maxVotes = 0;
+        for (const v of Object.values(voteCounts)) { if (v > maxVotes) maxVotes = v; }
+        const winners = Object.entries(voteCounts).filter(([, v]) => v === maxVotes).map(([k]) => k);
+        const winner = winners[Math.floor(Math.random() * winners.length)];
+
+        // Apply the voted skill
+        spendSkillPoint(winner);
+
+        const voteStatus = document.getElementById('vote-status');
+        if (voteStatus) voteStatus.textContent = `Vote result: ${winner.toUpperCase()} wins!`;
+
+        // Auto-continue after 1.5s
+        setTimeout(() => {
+            levelUpQueue--;
+            if (levelUpQueue > 0) {
+                coopVotes = {};
+                myVote = null;
+                rebuildSkillButtons();
+                if (document.getElementById('vote-status')) {
+                    document.getElementById('vote-status').textContent = 'Co-op: Vote on stat upgrade!';
+                }
+            } else {
+                const overlay = document.getElementById('levelup-overlay');
+                if (overlay) overlay.classList.add('hidden');
+                showingLevelUp = false;
+            }
+        }, 1500);
     }
 
     function rebuildSkillButtons() {
@@ -948,23 +1155,48 @@ const Campaign = (() => {
             { key: 'dash', name: 'DASH', desc: '-0.05s dash cooldown', cur: skills.dash, color: '#aa88ff' },
         ];
 
+        // Count votes for display
+        const voteCounts = {};
+        if (myVote) voteCounts[myVote] = (voteCounts[myVote] || 0) + 1;
+        for (const v of Object.values(coopVotes)) {
+            voteCounts[v] = (voteCounts[v] || 0) + 1;
+        }
+
         for (const s of skillData) {
             const btn = document.createElement('button');
             btn.className = 'levelup-skill-btn';
             btn.style.borderColor = s.color;
+            const voteIndicator = isCoopMode && voteCounts[s.key] ? ` [${voteCounts[s.key]} vote${voteCounts[s.key] > 1 ? 's' : ''}]` : '';
+            const myVoteMarker = myVote === s.key ? ' ★' : '';
             btn.innerHTML = `
-                <span class="skill-name" style="color:${s.color}">${s.name}</span>
-                <span class="skill-pips">${'|'.repeat(s.cur)}${s.cur > 0 ? '' : '-'}</span>
+                <span class="skill-name" style="color:${s.color}">${s.name}${myVoteMarker}</span>
+                <span class="skill-pips">${'|'.repeat(s.cur)}${s.cur > 0 ? '' : '-'}${voteIndicator}</span>
                 <span class="skill-desc">${s.desc}</span>
             `;
-            if (skillPoints > 0) {
-                btn.onclick = () => {
-                    spendSkillPoint(s.key);
-                    rebuildSkillButtons();
-                };
+            if (isCoopMode) {
+                // Co-op mode: clicking is a vote, not a direct spend
+                if (!myVote) {
+                    btn.onclick = () => {
+                        myVote = s.key;
+                        Network.send({ type: 'campaign-vote', skill: s.key });
+                        updateVoteDisplay();
+                        checkVoteConsensus();
+                    };
+                } else {
+                    btn.disabled = true;
+                    btn.style.opacity = myVote === s.key ? '1' : '0.4';
+                }
             } else {
-                btn.disabled = true;
-                btn.style.opacity = '0.4';
+                // Solo mode: direct spend
+                if (skillPoints > 0) {
+                    btn.onclick = () => {
+                        spendSkillPoint(s.key);
+                        rebuildSkillButtons();
+                    };
+                } else {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.4';
+                }
             }
             container.appendChild(btn);
         }
@@ -986,9 +1218,61 @@ const Campaign = (() => {
         const flash = mage.hitFlash > 0;
         const isDashing = mage.dashing;
         const s = zoom;
+        const t = performance.now() / 1000;
+
+        // Determine animation state
+        const isPlayer = mage === player;
+        const isMoving = isPlayer ? (keys['w'] || keys['s'] || keys['a'] || keys['d'] || keys['arrowup'] || keys['arrowdown'] || keys['arrowleft'] || keys['arrowright']) : false;
+        const isMeleeing = isPlayer ? (meleeTimer > 0) : false;
+        const isHurt = mage.hitFlash > 0.1;
+
+        let animState = 'idle';
+        if (isDashing) animState = 'dash';
+        else if (isHurt) animState = 'hurt';
+        else if (isMeleeing) animState = 'melee';
+        else if (isMoving) animState = 'walk';
+
+        // Animation calculations
+        const walkBob = Math.sin(t * 10) * 2;
+        const idleBob = Math.sin(t * 2.5) * 1.5;
+        const breathe = Math.sin(t * 3) * 0.5;
+
+        let bodyOffY = 0, headOffY = 0, legLOff = 0, legROff = 0, armAngle = 0, bodyTilt = 0;
+
+        switch (animState) {
+            case 'idle':
+                bodyOffY = idleBob;
+                headOffY = idleBob * 0.7;
+                armAngle = Math.sin(t * 1.5) * 0.1;
+                break;
+            case 'walk':
+                bodyOffY = Math.abs(walkBob) * 0.5;
+                headOffY = Math.abs(walkBob) * 0.3;
+                legLOff = walkBob * 1.5;
+                legROff = -walkBob * 1.5;
+                armAngle = Math.sin(t * 10) * 0.4;
+                break;
+            case 'dash':
+                bodyOffY = -2;
+                headOffY = -3;
+                bodyTilt = (mage.dashDirX || 0) * 0.2;
+                break;
+            case 'melee': {
+                const prog = 1 - meleeTimer / MELEE_DURATION;
+                bodyOffY = -1;
+                armAngle = -1.5 + prog * 3;
+                bodyTilt = Math.sin(prog * Math.PI) * 0.15;
+                break;
+            }
+            case 'hurt':
+                bodyOffY = Math.sin(t * 30) * 2;
+                headOffY = Math.sin(t * 30 + 1) * 2;
+                break;
+        }
 
         ctx.save();
 
+        // Dash afterimages
         if (isDashing) {
             ctx.globalAlpha = 0.12;
             ctx.fillStyle = color;
@@ -1001,42 +1285,67 @@ const Campaign = (() => {
 
         ctx.globalAlpha = isDashing ? 0.5 : 1;
 
+        // Shadow
         ctx.globalAlpha *= 0.3;
         ctx.fillStyle = '#000';
         ctx.fillRect(sx - 7*s, sy + 9*s, 14*s, 3*s);
         ctx.globalAlpha = isDashing ? 0.5 : 1;
 
+        // Transform for body animation
+        ctx.save();
+        ctx.translate(sx, sy + bodyOffY * s);
+        if (bodyTilt) ctx.rotate(bodyTilt);
+
         ctx.fillStyle = flash ? '#fff' : color;
-        ctx.fillRect(sx - 4*s, sy - 14*s, 8*s, 8*s);
-        ctx.fillRect(sx - 5*s, sy - 6*s, 10*s, 10*s);
-        ctx.fillRect(sx - 5*s, sy + 4*s, 4*s, 6*s);
-        ctx.fillRect(sx + 1*s, sy + 4*s, 4*s, 6*s);
 
+        // Legs (animated)
+        ctx.fillRect(-5*s, 4*s + legLOff * s, 4*s, 6*s);
+        ctx.fillRect(1*s, 4*s + legROff * s, 4*s, 6*s);
+
+        // Body
+        ctx.fillRect(-5*s, (-6 + breathe)*s, 10*s, 10*s);
+
+        // Head
+        const headY = (-14 + headOffY) * s;
+        ctx.fillRect(-4*s, headY, 8*s, 8*s);
+
+        // Hat
         if (!flash) ctx.fillStyle = light;
-        ctx.fillRect(sx - 6*s, sy - 16*s, 12*s, 2*s);
-        ctx.fillRect(sx - 3*s, sy - 20*s, 6*s, 4*s);
-        ctx.fillRect(sx - 1*s, sy - 22*s, 2*s, 2*s);
+        ctx.fillRect(-6*s, headY - 2*s, 12*s, 2*s);
+        ctx.fillRect(-3*s, headY - 6*s, 6*s, 4*s);
+        ctx.fillRect(-1*s, headY - 8*s, 2*s, 2*s);
 
+        // Wand arm (rotates)
+        ctx.save();
+        ctx.translate(5*s, -2*s);
+        ctx.rotate(armAngle);
         if (!flash) ctx.fillStyle = '#ffd700';
-        ctx.fillRect(sx + 5*s, sy - 4*s, 2*s, 12*s);
-        ctx.globalAlpha = (isDashing ? 0.3 : 0.5) + Math.sin(performance.now() / 200) * 0.3;
+        ctx.fillRect(0, -2*s, 2*s, 12*s);
+        ctx.globalAlpha = (isDashing ? 0.3 : 0.5) + Math.sin(t * 5) * 0.3;
         ctx.fillStyle = flash ? '#fff' : '#ffd700';
-        ctx.fillRect(sx + 4*s, sy - 6*s, 4*s, 4*s);
-        ctx.globalAlpha = 1;
+        ctx.fillRect(-1*s, -4*s, 4*s, 4*s);
+        ctx.globalAlpha = isDashing ? 0.5 : 1;
+        ctx.restore();
 
+        // Eyes (with blinking)
+        const blinkPhase = t % 4;
+        const eyeH = (blinkPhase > 3.85 && blinkPhase < 3.95) ? 1*s : 2*s;
         ctx.fillStyle = '#fff';
-        ctx.fillRect(sx - 2*s, sy - 12*s, 2*s, 2*s);
-        ctx.fillRect(sx + 1*s, sy - 12*s, 2*s, 2*s);
+        ctx.fillRect(-2*s, headY + 2*s, 2*s, eyeH);
+        ctx.fillRect(1*s, headY + 2*s, 2*s, eyeH);
 
+        ctx.restore(); // body transform
+
+        // Invuln shimmer
         if (mage.invulnTimer > 0) {
-            ctx.globalAlpha = 0.15 + Math.sin(performance.now() / 50) * 0.1;
+            ctx.globalAlpha = 0.15 + Math.sin(t * 50) * 0.1;
             ctx.fillStyle = '#88ccff';
             ctx.fillRect(sx - 8*s, sy - 16*s, 16*s, 28*s);
             ctx.globalAlpha = 1;
         }
 
         // Level badge
-        const lvl = mage === player ? playerLevel : (mage.level || 1);
+        const lvl = isPlayer ? playerLevel : (mage.level || 1);
         if (lvl > 1) {
             ctx.font = 'bold 8px "Courier New", monospace';
             ctx.textAlign = 'center';
@@ -1135,5 +1444,6 @@ const Campaign = (() => {
         onKeyDown, onKeyUp, onMouseMove, onMouseDown, onMouseUp,
         isGameOver: () => gameOver,
         getFloor: () => currentFloor,
+        hasSave, restoreFromSave, clearCheckpoint,
     };
 })();
